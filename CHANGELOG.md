@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### New
+- **Background update downloads**: When the automatic update check (on by default in **Settings → General**) finds a new release, DewClip downloads the release DMG in the background to `~/Library/Caches/io.github.rexkev214.dewclip/updates/` and verifies its size and SHA-256 against the checksum GitHub publishes for the release file.
+  - Only GitHub's release download hosts are accepted, only verified files are offered, and requests send only `User-Agent: DewClip` with no device information.
+  - Automatic downloads are skipped on metered connections (such as a Personal Hotspot) and in Low Data Mode, stop if the connection is too slow (stalled for 15 seconds, or below about 100 KB/s), and retry an hour later. Manual **Check for Updates** starts the download right away, including on metered connections or in Low Data Mode.
+  - Only one installer is kept at a time (older ones are deleted), and the cache is cleared when the update check is turned off, a version is skipped, or settings are reset.
+- **In-app update installation**: When a verified installer is ready, a banner, a dot on the Settings button, and a menu bar item show that the update is downloaded and ready to install. Nothing is ever installed without asking, and clipboard history and settings are never touched.
+  - **Install and Reopen** quits DewClip, replaces the app, and reopens the new version, keeping the old app as a backup until the new one opens and restoring it if anything fails.
+  - When automatic replacement is not possible (for example, the app folder is not writable or the new version is signed differently), DewClip quits and shows the verified installer in Finder so you can drag DewClip into Applications.
+  - **Later** hides the banner until the next launch; the reminder returns every time an older version is opened while the downloaded update is waiting. If an install did not complete, DewClip notifies you once.
+  - If a release has no suitable installer, DewClip falls back to linking to the release page with instructions for replacing the app manually.
+
+### Changed
+- Release builds can now be signed with a fixed code-signing certificate (`npm run tauri:build:release`, identity `"DewClip Release Signing"`), while ordinary builds keep ad-hoc signing. This is meant to keep the Accessibility permission across future updates (to be confirmed only when the first release signed this way is published).
+
 ## 1.1.0 — 2026-11-27
 
 ### New

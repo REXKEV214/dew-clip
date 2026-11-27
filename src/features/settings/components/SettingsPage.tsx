@@ -527,6 +527,7 @@ const SettingsPage = ({
           onCheck={() => void updates.check()}
           onView={updates.openDialog}
           onOpenReleasePage={updates.openReleasePage}
+          onDownload={updates.download}
         />
         <div className="brand-author">by REXKEV214</div>
         <button type="button" className="link-button brand-link" onClick={() => void openUrl(GITHUB_URL)}>

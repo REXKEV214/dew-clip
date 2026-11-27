@@ -10,7 +10,12 @@ fn main() {
 
 /// The native Translation and URLSession bridges share a static Swift library.
 fn build_swift_bridge() {
-    const SOURCES: [&str; 2] = ["swift/Translate.swift", "swift/UpdateCheck.swift"];
+    const SOURCES: [&str; 4] = [
+        "swift/Translate.swift",
+        "swift/UpdateCheck.swift",
+        "swift/UpdateDownload.swift",
+        "swift/UpdateSignature.swift",
+    ];
     for source in SOURCES {
         println!("cargo:rerun-if-changed={source}");
     }

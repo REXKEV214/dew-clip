@@ -103,6 +103,11 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Data Directory
     let mut app_dir = resolve_data_dir(app)?;
+    let mut update_cache = updater::UpdateCache::new(update_cache_path(
+        app.path().app_cache_dir()?,
+        cfg!(all(target_os = "macos", debug_assertions)),
+    ));
+    update_cache.exclude_data_dir(&app_dir);
 
     // 2. Logger Initialization
     crate::logger::init(app_dir.join("dewclip.log"));
@@ -116,6 +121,7 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         match crate::app::data_directory::apply_requested_move(&default, &app_dir) {
             Ok(Some(path)) => {
                 app_dir = path;
+                update_cache.exclude_data_dir(&app_dir);
                 crate::infrastructure::encryption::init(&app_dir);
                 crate::logger::init(app_dir.join("dewclip.log"));
             }
@@ -158,7 +164,12 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     crate::app::commands::thumbnail_cmd::init_thumbnail_cache(app.handle());
     crate::app::data_directory::prepare_session(&app_dir)?;
     setup_state(app, conn_arc.clone(), &settings, app_dir.clone());
-    app.manage(updater::UpdateState::load(app.package_info().version.clone(), &conn_arc.lock().unwrap())?);
+    app.manage(updater::UpdateState::load(
+        app.package_info().version.clone(),
+        &conn_arc.lock().unwrap(),
+        update_cache,
+    )?);
+    updater::cleanup_update_mounts();
     app.manage(crate::services::recording_pause::RecordingPause::default());
     crate::services::clipboard::start_session_file_sweeper(app.handle().clone());
     app.manage(EncryptionQueueState(init_encryption_queue(app_handle.clone())));
@@ -187,14 +198,18 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 pub(crate) fn default_app_data_dir<R: tauri::Runtime>(
     paths: &tauri::path::PathResolver<R>,
 ) -> tauri::Result<std::path::PathBuf> {
-    Ok(isolate_debug_data_dir(
+    Ok(isolate_debug_directory(
         paths.app_data_dir()?,
         cfg!(all(target_os = "macos", debug_assertions)),
     ))
 }
 
-// macOS 调试构建以本地文件保存主密钥，必须与正式版使用不同的数据目录。
-fn isolate_debug_data_dir(dir: std::path::PathBuf, macos_debug: bool) -> std::path::PathBuf {
+fn update_cache_path(cache: std::path::PathBuf, macos_debug: bool) -> std::path::PathBuf {
+    isolate_debug_directory(cache, macos_debug).join("updates")
+}
+
+// macOS 调试构建与正式版使用不同的缓存和数据目录。
+fn isolate_debug_directory(dir: std::path::PathBuf, macos_debug: bool) -> std::path::PathBuf {
     if !macos_debug {
         return dir;
     }
@@ -234,20 +249,30 @@ fn resolve_data_dir(app: &App) -> Result<std::path::PathBuf, Box<dyn std::error:
 
 #[cfg(test)]
 mod data_dir_tests {
-    use super::isolate_debug_data_dir;
+    use super::{isolate_debug_directory, update_cache_path};
 
     #[test]
     fn debug_and_release_default_data_directories_are_separate() {
         let base = std::env::temp_dir();
         let release = base.join("io.github.rexkev214.dewclip");
         let dev = base.join("io.github.rexkev214.dewclip.dev");
-        assert_eq!(isolate_debug_data_dir(release.clone(), false), release);
-        assert_eq!(isolate_debug_data_dir(release, true), dev);
-        assert_eq!(isolate_debug_data_dir(dev.clone(), true), dev);
+        assert_eq!(isolate_debug_directory(release.clone(), false), release);
+        assert_eq!(isolate_debug_directory(release, true), dev);
+        assert_eq!(isolate_debug_directory(dev.clone(), true), dev);
         assert_eq!(
-            isolate_debug_data_dir(std::path::PathBuf::new(), true),
+            isolate_debug_directory(std::path::PathBuf::new(), true),
             std::path::PathBuf::from("io.github.rexkev214.dewclip.dev")
         );
+    }
+
+    #[test]
+    fn macos_debug_update_cache_maps_both_bundle_identifiers_to_dev() {
+        let base = std::env::temp_dir();
+        let release = base.join("io.github.rexkev214.dewclip");
+        let dev = base.join("io.github.rexkev214.dewclip.dev");
+        assert_eq!(update_cache_path(release.clone(), false), release.join("updates"));
+        assert_eq!(update_cache_path(release, true), dev.join("updates"));
+        assert_eq!(update_cache_path(dev.clone(), true), dev.join("updates"));
     }
 }
 

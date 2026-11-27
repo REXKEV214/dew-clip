@@ -29,6 +29,7 @@ struct Labels {
     sequential_start: String,
     sequential_end: String,
     update_available: String,
+    update_ready: String,
 }
 
 impl Labels {
@@ -58,8 +59,11 @@ impl Labels {
         }
     }
 
-    fn update(&self, version: Option<&str>) -> Option<String> {
-        version.map(|version| self.update_available.replace("{version}", version))
+    fn update(&self, version: Option<(&str, bool)>) -> Option<String> {
+        version.map(|(version, ready)| {
+            let label = if ready { &self.update_ready } else { &self.update_available };
+            label.replace("{version}", version)
+        })
     }
 }
 
@@ -153,7 +157,8 @@ fn rebuild_tray(app: &AppHandle, tray: &TrayIcon) -> tauri::Result<()> {
     };
     menu.append(&MenuItem::with_id(app, id, label, true, None::<&str>)?)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
-    if let Some(label) = labels.update(app.state::<UpdateState>().available_version().as_deref()) {
+    let update = app.state::<UpdateState>().available_version();
+    if let Some(label) = labels.update(update.as_ref().map(|(version, ready)| (version.as_str(), *ready))) {
         menu.append(&MenuItem::with_id(app, "show_update", label, true, None::<&str>)?)?;
     }
     menu.append(&quit)?;
@@ -347,8 +352,10 @@ mod tests {
 
     #[test]
     fn update_menu_item_uses_the_language_and_requires_an_available_version() {
-        assert_eq!(labels(true).update(Some("1.2.0")).as_deref(), Some("Update Available (v1.2.0)…"));
-        assert_eq!(labels(false).update(Some("1.2.0")).as_deref(), Some("发现新版本 v1.2.0…"));
+        assert_eq!(labels(true).update(Some(("1.2.0", false))).as_deref(), Some("Update Available (v1.2.0)…"));
+        assert_eq!(labels(false).update(Some(("1.2.0", false))).as_deref(), Some("发现新版本 v1.2.0…"));
+        assert_eq!(labels(true).update(Some(("1.2.0", true))).as_deref(), Some("Install Update (1.2.0)…"));
+        assert_eq!(labels(false).update(Some(("1.2.0", true))).as_deref(), Some("安装更新（1.2.0）…"));
         assert_eq!(labels(true).update(None), None);
         assert_eq!(labels(false).update(None), None);
     }
