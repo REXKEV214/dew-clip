@@ -13,6 +13,7 @@ const zh = {
   settings: "设置",
 
   // Search and tabs
+  search_placeholder: "搜索",
   search_clear: "清空搜索",
   search_close: "收起搜索",
   type_text: "文本",
@@ -55,6 +56,8 @@ const zh = {
   // Favorites
   favorites_title: "常用",
   favorites_add: "添加",
+  favorites_search_placeholder: "搜索常用内容",
+  favorites_empty_search: "没有找到匹配的常用内容",
   favorites_placeholder: "输入要保存的常用语",
   favorites_empty_title: "还没有常用内容",
   favorites_empty_hint: "点「添加」手动输入，或在记录上右键添加",
@@ -346,6 +349,8 @@ const zh = {
 
   // Errors
   copy_failed: "粘贴失败：",
+  copied_to_clipboard: "已复制到剪贴板",
+  copy_only_failed: "复制失败：",
   delete_failed: "删除失败：",
   pin_failed: "置顶失败：",
   save_failed: "保存失败：",
@@ -376,6 +381,7 @@ const en: Record<TranslationKey, string> = {
   clear_history: "Clear history",
   settings: "Settings",
 
+  search_placeholder: "Search",
   search_clear: "Clear search",
   search_close: "Close search",
   type_text: "Text",
@@ -415,6 +421,8 @@ const en: Record<TranslationKey, string> = {
 
   favorites_title: "Favorites",
   favorites_add: "Add",
+  favorites_search_placeholder: "Search favorites",
+  favorites_empty_search: "No matching favorites",
   favorites_placeholder: "Type the text to keep",
   favorites_empty_title: "No favorites yet",
   favorites_empty_hint: "Click Add, or right-click an item in the history",
@@ -688,6 +696,8 @@ const en: Record<TranslationKey, string> = {
   github: "GitHub",
 
   copy_failed: "Paste failed: ",
+  copied_to_clipboard: "Copied to clipboard",
+  copy_only_failed: "Copy failed: ",
   delete_failed: "Delete failed: ",
   pin_failed: "Pin failed: ",
   save_failed: "Save failed: ",

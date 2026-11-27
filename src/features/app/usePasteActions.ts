@@ -95,5 +95,25 @@ export const usePasteActions = ({ t, pushToast, deleteAfterPaste, moveToTopAfter
     [afterPaste, afterUse, failed]
   );
 
-  return { paste, pasteImageText, afterUse, failed };
+  const copyOnly = useCallback(
+    async (entry: ClipboardEntry) => {
+      try {
+        await invoke("copy_to_clipboard", {
+          content: contentFor(entry),
+          contentType: entry.content_type,
+          ...entryKey(entry),
+          paste: false,
+          pasteWithFormat: true,
+          deleteAfterUse: false,
+          moveToTop: false,
+        });
+        pushToast(t("copied_to_clipboard"), 3000);
+      } catch (error) {
+        pushToast(t("copy_only_failed") + String(error), 3000);
+      }
+    },
+    [pushToast, t]
+  );
+
+  return { paste, pasteImageText, copyOnly, afterUse, failed };
 };

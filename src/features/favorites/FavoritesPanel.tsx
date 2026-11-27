@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, KeyboardEvent, MutableRefObject, WheelEvent } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ChangeEvent, KeyboardEvent, WheelEvent } from "react";
 import { Reorder, useDragControls } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { FileText, GripVertical, Pencil, Play, Plus, Trash2, X } from "lucide-react";
+import { FileText, GripVertical, Pencil, Play, Plus, Search, Trash2, X } from "lucide-react";
 import type { FavoriteItem, Translate } from "../../shared/types";
 import { isEditableEntry } from "../../shared/lib/clipboardTypes";
 import { useImageThumbnail, useVideoThumbnail } from "../../shared/hooks/useImageThumbnail";
+import { useLiveSearch } from "../../shared/hooks/useLiveSearch";
+import { isTauriRuntime } from "../../shared/lib/tauriRuntime";
 import { startWindowDrag } from "../../shared/lib/windowDrag";
+import { HighlightedParts } from "../clipboard/HighlightedParts";
+import { fileName, findMatchedFilePath, hasMatch, matchedExcerpt, splitMatches } from "../clipboard/searchHighlight";
 import { FAVORITE_TABS, inTab, matchesVisible, mergeOrder, type FavoriteTab } from "./favoriteList";
 import {
   appendTag,
@@ -25,8 +29,13 @@ interface FavoritesPanelProps {
   onPasteFailed: (error: unknown) => void;
   /** Tells the app an editor is open, so the list's keys stay off. */
   onEditingChange?: (editing: boolean) => void;
-  /** Esc: closes the open editor first. False when none was open. */
-  cancelEditRef?: MutableRefObject<(() => boolean) | null>;
+}
+
+export interface FavoritesPanelHandle {
+  focusSearchIfWithin: () => boolean;
+  isSearchComposing: () => boolean;
+  /** Esc: close the editor or clear the search before closing the panel. */
+  dismiss: () => boolean;
 }
 
 type EditorMode = "text" | "media";
@@ -37,8 +46,6 @@ interface EditorValue {
   text: string;
 }
 
-const fileName = (path: string) => path.split(/[\\/]/).pop() || path;
-
 /** Pinyin being picked: Return and commas belong to the input method. */
 const composing = (event: KeyboardEvent) => event.nativeEvent.isComposing || event.keyCode === 229;
 
@@ -47,15 +54,21 @@ const moreFiles = (t: Translate, item: FavoriteItem) =>
     ? t("more_files").replace("{count}", String(item.paths.length - 1))
     : null;
 
-const FavoriteMedia = ({ item, t, hasTitle }: { item: FavoriteItem; t: Translate; hasTitle: boolean }) => {
-  const path = item.paths[0] ?? "";
+const FavoriteMedia = ({ item, t, hasTitle, query }: {
+  item: FavoriteItem; t: Translate; hasTitle: boolean; query: string;
+}) => {
+  const { path, parts } = findMatchedFilePath(item.paths, query);
   const image = useImageThumbnail(item.content_type === "image" ? path : null, true, item.created_at);
   const video = useVideoThumbnail(item.content_type === "video" ? path : null, item.created_at);
+  const name = fileName(path);
+  const label = (
+    <span className="favorite-name" title={name}>{parts ? <HighlightedParts parts={parts} /> : name}</span>
+  );
   if (item.content_type === "image") {
-    // 常用图 shows the picture alone, never the attachment's file name.
     return (
       <span className="favorite-media is-image">
         {image && <img className="favorite-image" src={image} alt="" draggable={false} />}
+        {parts && label}
       </span>
     );
   }
@@ -69,7 +82,7 @@ const FavoriteMedia = ({ item, t, hasTitle }: { item: FavoriteItem; t: Translate
         </span>
       )}
       {item.content_type === "file" && <FileText size={20} className="favorite-file-icon" />}
-      <span className="favorite-name" title={fileName(path)}>{fileName(path)}</span>
+      {label}
       {more && <span className="card-file-more">{more}</span>}
     </span>
   );
@@ -330,9 +343,10 @@ const FavoriteEditor = ({
   );
 };
 
-const FavoriteRow = ({
+export const FavoriteRow = ({
   item,
   t,
+  query,
   editing,
   existingTags,
   saving,
@@ -346,6 +360,7 @@ const FavoriteRow = ({
 }: {
   item: FavoriteItem;
   t: Translate;
+  query: string;
   editing: boolean;
   existingTags: string[];
   saving: boolean;
@@ -364,6 +379,13 @@ const FavoriteRow = ({
   const tags = item.tags ?? [];
   const hasTitle = title.length > 0;
   const hasTags = tags.length > 0;
+  const searching = query !== "";
+  const textMatch = isText && searching
+    ? matchedExcerpt(item.preview, query) ?? matchedExcerpt(item.content, query)
+    : null;
+  const tagParts = tags.map((tag) => ({ tag, parts: splitMatches(tag, query) }));
+  // Make a match visible even when its tag was behind the overflow pill.
+  if (searching) tagParts.sort((a, b) => Number(hasMatch(b.parts)) - Number(hasMatch(a.parts)));
   return (
     <Reorder.Item
       value={item}
@@ -393,41 +415,43 @@ const FavoriteRow = ({
           className={`favorite-item${item.content_type === "image" ? " is-image" : ""}${hasTitle ? " has-title" : ""}${hasTags ? " has-tags" : ""}`}
           onClick={onPaste}
         >
-          <span
-            className="favorite-grip"
-            title={t("favorites_drag")}
-            onClick={(event) => event.stopPropagation()}
-            onPointerDown={(event) => {
-              event.preventDefault();
-              dragControls.start(event);
-            }}
-          >
-            <GripVertical size={14} />
-          </span>
+          {!searching && (
+            <span
+              className="favorite-grip"
+              title={t("favorites_drag")}
+              onClick={(event) => event.stopPropagation()}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                dragControls.start(event);
+              }}
+            >
+              <GripVertical size={14} />
+            </span>
+          )}
           <div className="favorite-body">
             {hasTitle && (
               <span className="favorite-item-title" title={title}>
-                {title}
+                <HighlightedParts parts={splitMatches(title, query)} />
               </span>
             )}
             {isText ? (
               <span
                 className={`favorite-text${item.content_type === "code" ? " is-code" : ""}${hasTitle ? " has-title" : ""}`}
               >
-                {item.preview || item.content}
+                {textMatch ? <HighlightedParts parts={textMatch} /> : item.preview || item.content}
               </span>
             ) : (
-              <FavoriteMedia item={item} t={t} hasTitle={hasTitle} />
+              <FavoriteMedia item={item} t={t} hasTitle={hasTitle} query={query} />
             )}
             {hasTags && (
               <span className="favorite-card-tags" aria-label={tags.join(", ")}>
-                {tags.slice(0, MAX_CARD_VISIBLE_TAGS).map((tag) => (
+                {tagParts.slice(0, MAX_CARD_VISIBLE_TAGS).map(({ tag, parts }) => (
                   <span key={tag} className="favorite-card-tag" title={tag}>
-                    {tag}
+                    <HighlightedParts parts={parts} />
                   </span>
                 ))}
                 {tags.length > MAX_CARD_VISIBLE_TAGS && (
-                  <span className="favorite-card-tag is-more" title={tags.slice(MAX_CARD_VISIBLE_TAGS).join(", ")}>
+                  <span className="favorite-card-tag is-more" title={tagParts.slice(MAX_CARD_VISIBLE_TAGS).map(({ tag }) => tag).join(", ")}>
                     +{tags.length - MAX_CARD_VISIBLE_TAGS}
                   </span>
                 )}
@@ -467,7 +491,9 @@ const FavoriteRow = ({
   );
 };
 
-const FavoritesPanel = ({ t, pushToast, onPasteFailed, onEditingChange, cancelEditRef }: FavoritesPanelProps) => {
+const FavoritesPanel = forwardRef<FavoritesPanelHandle, FavoritesPanelProps>(({
+  t, pushToast, onPasteFailed, onEditingChange,
+}, ref) => {
   const [items, setItems] = useState<FavoriteItem[]>([]);
   const [adding, setAdding] = useState(false);
   const [tab, setTab] = useState<FavoriteTab>("text");
@@ -475,7 +501,12 @@ const FavoritesPanel = ({ t, pushToast, onPasteFailed, onEditingChange, cancelEd
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [overflow, setOverflow] = useState({ left: false, right: false });
+  const search = useLiveSearch(0);
+  const query = search.search;
+  const searching = query !== "";
+  const searchLabel = t("favorites_search_placeholder");
   const panelRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const addButtonRef = useRef<HTMLButtonElement>(null);
   const tagBarRef = useRef<HTMLDivElement>(null);
   const orderRef = useRef(items);
@@ -486,6 +517,7 @@ const FavoritesPanel = ({ t, pushToast, onPasteFailed, onEditingChange, cancelEd
   }, []);
 
   useEffect(() => {
+    if (!isTauriRuntime()) return;
     refresh();
     const subscription = listen("favorites-changed", refresh);
     return () => void subscription.then((off) => off());
@@ -497,7 +529,7 @@ const FavoritesPanel = ({ t, pushToast, onPasteFailed, onEditingChange, cancelEd
   // The row being edited stays visible while its editor is open, even when a
   // filter change would hide it, so unsaved edits are never lost.
   const visible = items.filter(
-    (item) => matchesVisible(item, tab, selectedTag) || (item.id === editingId && inTab(item, tab))
+    (item) => matchesVisible(item, tab, selectedTag, query) || (item.id === editingId && inTab(item, tab))
   );
   const isEditing = adding || editingId !== null;
 
@@ -527,21 +559,33 @@ const FavoritesPanel = ({ t, pushToast, onPasteFailed, onEditingChange, cancelEd
         editedId === null
           ? addButtonRef.current
           : panelRef.current?.querySelector<HTMLElement>(`[data-favorite-edit="${editedId}"]`);
-      target?.focus({ preventScroll: true });
+      (target ?? searchInputRef.current)?.focus({ preventScroll: true });
     });
   }, [editingId]);
 
-  useEffect(() => {
-    if (!cancelEditRef) return;
-    cancelEditRef.current = () => {
-      if (!isEditing) return false;
-      if (!saving) closeEditor();
+  const clearSearch = () => {
+    search.clear();
+    searchInputRef.current?.focus({ preventScroll: true });
+  };
+
+  useImperativeHandle(ref, () => ({
+    focusSearchIfWithin: () => {
+      if (!panelRef.current?.contains(document.activeElement)) return false;
+      searchInputRef.current?.focus({ preventScroll: true });
+      searchInputRef.current?.select();
       return true;
-    };
-    return () => {
-      cancelEditRef.current = null;
-    };
-  }, [cancelEditRef, closeEditor, isEditing, saving]);
+    },
+    isSearchComposing: () => document.activeElement === searchInputRef.current && search.isComposing(),
+    dismiss: () => {
+      if (isEditing) {
+        if (!saving) closeEditor();
+        return true;
+      }
+      if (!search.draft && !query) return false;
+      clearSearch();
+      return true;
+    },
+  }));
 
   const syncTagBarOverflow = useCallback(() => {
     const bar = tagBarRef.current;
@@ -626,6 +670,34 @@ const FavoritesPanel = ({ t, pushToast, onPasteFailed, onEditingChange, cancelEd
       </div>
 
       <div className="favorite-toolbar">
+        <div className="favorite-search">
+          <Search size={14} aria-hidden="true" />
+          <input
+            ref={searchInputRef}
+            type="text"
+            placeholder={searchLabel}
+            aria-label={searchLabel}
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
+            value={search.draft}
+            onChange={(event) => search.change(event.target.value)}
+            onCompositionStart={search.startComposition}
+            onCompositionEnd={(event) => search.endComposition(event.currentTarget.value)}
+          />
+          {search.draft && (
+            <button
+              type="button"
+              title={t("search_clear")}
+              aria-label={t("search_clear")}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={clearSearch}
+            >
+              <X size={12} aria-hidden="true" />
+            </button>
+          )}
+        </div>
+
         <div className="favorite-tabs" role="tablist">
           {FAVORITE_TABS.map((id) => (
             <button
@@ -694,7 +766,11 @@ const FavoritesPanel = ({ t, pushToast, onPasteFailed, onEditingChange, cancelEd
           />
         )}
 
-        {visible.length === 0 && !adding ? (
+        {visible.length === 0 && !adding && searching ? (
+          <div className="empty-state">
+            <p className="empty-title">{t("favorites_empty_search")}</p>
+          </div>
+        ) : visible.length === 0 && !adding ? (
           <div className="empty-state">
             <p className="empty-title">{selectedTag ? t("favorites_empty_tag") : t(`favorites_empty_${tab}`)}</p>
             {selectedTag ? (
@@ -712,16 +788,17 @@ const FavoritesPanel = ({ t, pushToast, onPasteFailed, onEditingChange, cancelEd
             onReorder={(reordered) => {
               // While an editor is open the list may show a row outside the
               // filter; reordering then would misplace slots, so it waits.
-              if (isEditing) return;
+              if (isEditing || searching) return;
               setItems((all) => mergeOrder(all, tab, selectedTag, reordered));
             }}
-            className={`favorite-list${tab === "media" ? " is-media" : ""}`}
+            className={`favorite-list${tab === "media" ? " is-media" : ""}${searching ? " is-searching" : ""}`}
           >
             {visible.map((item) => (
               <FavoriteRow
                 key={item.id}
                 item={item}
                 t={t}
+                query={query}
                 editing={editingId === item.id}
                 existingTags={allTags}
                 saving={saving}
@@ -739,6 +816,7 @@ const FavoritesPanel = ({ t, pushToast, onPasteFailed, onEditingChange, cancelEd
                   invoke("delete_favorite", { id: item.id }).catch(fail);
                 }}
                 onDragEnd={() => {
+                  if (searching) return;
                   invoke("reorder_favorites", { ids: orderRef.current.map((favorite) => favorite.id) }).catch(fail);
                 }}
               />
@@ -748,6 +826,8 @@ const FavoritesPanel = ({ t, pushToast, onPasteFailed, onEditingChange, cancelEd
       </div>
     </div>
   );
-};
+});
+
+FavoritesPanel.displayName = "FavoritesPanel";
 
 export default FavoritesPanel;

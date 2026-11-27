@@ -22,7 +22,7 @@ interface ClipboardListProps {
   loading: boolean;
   selectedIndex: number | null;
   onLoadMore: () => void;
-  renderItem: (item: ClipboardEntry) => ReactNode;
+  renderItem: (item: ClipboardEntry, index: number) => ReactNode;
 }
 
 interface ListContext {
@@ -65,7 +65,7 @@ const ClipboardList = forwardRef<ClipboardListHandle, ClipboardListProps>(
       []
     );
     const itemContent = useCallback(
-      (_index: number, item: ClipboardEntry) => <div className="list-row">{renderItem(item)}</div>,
+      (index: number, item: ClipboardEntry) => <div className="list-row">{renderItem(item, index)}</div>,
       [renderItem]
     );
     const endReached = useCallback(() => {

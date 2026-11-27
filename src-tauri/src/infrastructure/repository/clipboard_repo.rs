@@ -5,6 +5,7 @@ use crate::database::{
 use crate::domain::models::{ClipboardEntry, EntryIdentity};
 use crate::infrastructure::encryption;
 use crate::infrastructure::repository::settings_repo::SqliteSettingsRepository;
+use crate::services::clipboard::file_names_match;
 use rusqlite::{params, OptionalExtension};
 use rusqlite::Connection;
 use std::collections::HashSet;
@@ -182,6 +183,11 @@ fn register_history_functions(conn: &Connection) -> rusqlite::Result<()> {
     conn.create_scalar_function("dewclip_decodable", 1, flags, |ctx| {
         let value = ctx.get_raw(0).as_str()?;
         Ok(!encryption::is_encrypted_value(value) || encryption::decrypt_stored_value(value).is_ok())
+    })?;
+    conn.create_scalar_function("dewclip_file_names_match", 2, flags, |ctx| {
+        let content = ctx.get_raw(0).as_str_or_null()?;
+        let term = ctx.get_raw(1).as_str()?;
+        Ok(content.is_some_and(|content| file_names_match(content, term)))
     })
 }
 
@@ -660,6 +666,7 @@ impl SqliteClipboardRepository {
                 "((content_type IN ('text','code','url','rich_text')
                     AND (({DECODED_CONTENT}) LIKE :pattern ESCAPE '\\'
                          OR ({DECODED_PREVIEW}) LIKE :pattern ESCAPE '\\'))
+                  OR (content_type IN ('file','video') AND dewclip_file_names_match({DECODED_CONTENT}, :term))
                   OR ({ocr_match}) OR source_app LIKE :pattern ESCAPE '\\'
                   OR note LIKE :pattern ESCAPE '\\'
                   OR EXISTS(SELECT 1 FROM entry_tags WHERE entry_id = ch.id AND tag LIKE :pattern ESCAPE '\\'))"
@@ -680,8 +687,10 @@ impl SqliteClipboardRepository {
         let mut stmt = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
         let rows = if tag_only {
             stmt.query_map(rusqlite::named_params! { ":kind": kind, ":term": term, ":limit": limit }, Self::list_row)
-        } else {
+        } else if note_only {
             stmt.query_map(rusqlite::named_params! { ":kind": kind, ":pattern": term_pattern, ":limit": limit }, Self::list_row)
+        } else {
+            stmt.query_map(rusqlite::named_params! { ":kind": kind, ":pattern": term_pattern, ":term": term, ":limit": limit }, Self::list_row)
         }.map_err(|e| e.to_string())?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|e| e.to_string())
@@ -2222,6 +2231,45 @@ mod tests {
             search_ids(&repo, "needle", 0, false, false),
             Vec::<i64>::new()
         );
+    }
+
+    #[test]
+    fn general_search_matches_file_and_video_names_with_type_filters() {
+        let repo = search_repository(
+            r#"
+            INSERT INTO clipboard_history
+                (id, content_type, content, source_app, timestamp, sort_at, preview)
+            VALUES
+                (1, 'file', '/Documents/parent-only/REPORT.PDF', 'Finder', 30, 30, ''),
+                (2, 'file', '/parent-only/first.txt' || char(10) || char(10) ||
+                    ' C:\parent-only\报告[final].pdf ' || char(10), 'Finder', 20, 20, ''),
+                (3, 'video', '/parent-only/报告.MOV', 'Finder', 10, 10, ''),
+                (4, 'image', '/parent-only/报告.png', 'Finder', 5, 5, '');
+            "#,
+        );
+        assert_eq!(search_ids(&repo, "report.pdf", 10, false, false), vec![1]);
+        assert_eq!(search_ids(&repo, "报告", 10, false, false), vec![2, 3]);
+        assert_eq!(search_ids(&repo, "报告.mov", 10, false, false), vec![3]);
+        assert_eq!(search_ids(&repo, "[FINAL]", 10, false, false), vec![2]);
+        assert!(search_ids(&repo, "parent-only", 10, false, false).is_empty());
+        assert!(search_ids(&repo, "报告", 10, false, true).is_empty());
+        assert!(search_ids(&repo, "报告", 10, true, false).is_empty());
+        for (kind, id) in [("file", 2), ("video", 3)] {
+            let matches = repo.search_filtered("报告", 10, false, false, Some(kind)).unwrap();
+            assert_eq!(matches.iter().map(|entry| entry.id).collect::<Vec<_>>(), vec![id]);
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "portable"))]
+    fn file_search_matches_decoded_content() {
+        let repo = search_repository(
+            "INSERT INTO clipboard_history
+                 (id, content_type, content, source_app, timestamp, sort_at, preview)
+             VALUES (1, 'file', 'plain:/private/Document.pdf', 'Finder', 1, 1, '');",
+        );
+        assert_eq!(search_ids(&repo, "document.pdf", 10, false, false), vec![1]);
+        assert!(search_ids(&repo, "private", 10, false, false).is_empty());
     }
 
     #[test]
