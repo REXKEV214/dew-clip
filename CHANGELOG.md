@@ -1,20 +1,25 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-11-28
 
 ### New
 - **Background update downloads**: When the automatic update check (on by default in **Settings → General**) finds a new release, DewClip downloads the release DMG in the background to `~/Library/Caches/io.github.rexkev214.dewclip/updates/` and verifies its size and SHA-256 against the checksum GitHub publishes for the release file.
-  - Only GitHub's release download hosts are accepted, only verified files are offered, and requests send only `User-Agent: DewClip` with no device information.
-  - Automatic downloads are skipped on metered connections (such as a Personal Hotspot) and in Low Data Mode, stop if the connection is too slow (stalled for 15 seconds, or below about 100 KB/s), and retry an hour later. Manual **Check for Updates** starts the download right away, including on metered connections or in Low Data Mode.
+  - Only GitHub release download hosts (`github.com` release download URLs, redirected to `release-assets.githubusercontent.com`) are accepted, only verified files are offered, and requests send only `User-Agent: DewClip` with no device information.
+  - Automatic downloads are skipped on metered connections (such as a Personal Hotspot) and in Low Data Mode, give up if stalled for 15 seconds or below about 100 KB/s, and retry an hour later. Manual **Check for Updates** starts the download right away, including on metered connections or in Low Data Mode.
   - Only one installer is kept at a time (older ones are deleted), and the cache is cleared when the update check is turned off, a version is skipped, or settings are reset.
-- **In-app update installation**: When a verified installer is ready, a banner, a dot on the Settings button, and a menu bar item show that the update is downloaded and ready to install. Nothing is ever installed without asking, and clipboard history and settings are never touched.
+- **In-app update installation**: When a verified installer is ready, a banner, a dot on the Settings button, and a menu bar item show that the update is downloaded and ready to install. Nothing is ever installed without asking, and user data (clipboard history and settings) is never touched.
   - **Install and Reopen** quits DewClip, replaces the app, and reopens the new version, keeping the old app as a backup until the new one opens and restoring it if anything fails.
-  - When automatic replacement is not possible (for example, the app folder is not writable or the new version is signed differently), DewClip quits and shows the verified installer in Finder so you can drag DewClip into Applications.
-  - **Later** hides the banner until the next launch; the reminder returns every time an older version is opened while the downloaded update is waiting. If an install did not complete, DewClip notifies you once.
+  - When automatic replacement is not possible (the app folder is not writable, the app is run from elsewhere, or the new version is signed differently), DewClip quits and shows the verified installer in Finder so you can drag DewClip into Applications.
+  - **Later** hides the banner until the next launch; the reminder returns on every launch of an older version while the downloaded update is waiting. If an install did not complete, DewClip notifies you once.
   - If a release has no suitable installer, DewClip falls back to linking to the release page with instructions for replacing the app manually.
 
 ### Changed
-- Release builds can now be signed with a fixed code-signing certificate (`npm run tauri:build:release`, identity `"DewClip Release Signing"`), while ordinary builds keep ad-hoc signing. This is meant to keep the Accessibility permission across future updates (to be confirmed only when the first release signed this way is published).
+- **Fixed release code-signing certificate**: 1.2.0 is the first release signed with a fixed self-signed certificate (`"DewClip Release Signing"`, via `npm run tauri:build:release`, which fails without the maintainer's certificate; `npm run tauri:build` remains ad-hoc signed for building from source). The app is not signed with an Apple Developer ID and is not notarized. Tested on macOS 26 by replacing one build with another signed with the same certificate: Accessibility permission and auto-paste keep working across future updates without granting again.
+
+### Upgrading
+- **Manual install this time**: DewClip 1.1.0 can only notify about 1.2.0 and link to the release page, so download `DewClip_1.2.0.dmg`, quit DewClip, and drag `DewClip.app` into **Applications** to replace the old version. Starting with 1.2.0, future updates download in the app.
+- **One-time Accessibility permission re-grant**: Upgrading from 1.0.x or 1.1.x to 1.2.0 resets Accessibility permission one last time because the signature changes from ad-hoc to the fixed `"DewClip Release Signing"` certificate. Re-grant it via the in-app prompt or **System Settings → Privacy & Security → Accessibility**. From 1.2.0 onward, updates signed with the same certificate keep the permission (tested on macOS 26).
+- **First launch**: As before, a DMG downloaded in a browser still requires **System Settings → Privacy & Security → Open Anyway** on first launch.
 
 ## 1.1.0 — 2026-11-27
 

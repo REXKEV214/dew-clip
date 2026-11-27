@@ -1,6 +1,6 @@
 [package]
 name = "dewclip"
-version = "1.1.0"
+version = "1.2.0"
 description = "DewClip - a liquid glass clipboard manager for macOS"
 authors = ["REXKEV214"]
 edition = "2021"
