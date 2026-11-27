@@ -1,4 +1,4 @@
-import { ArrowLeft, Pin, Settings as SettingsIcon, Star, Trash2 } from "lucide-react";
+import { ArrowLeft, ListOrdered, Pin, Settings as SettingsIcon, Star, Trash2 } from "lucide-react";
 import { showNativeMenu } from "../../shared/lib/nativeMenu";
 import { startWindowDrag } from "../../shared/lib/windowDrag";
 import type { Translate, WindowPinMode } from "../../shared/types";
@@ -9,8 +9,12 @@ interface AppHeaderProps {
   isWindowPinned: boolean;
   pinMode: WindowPinMode;
   favoritesOpen: boolean;
+  sequentialActive: boolean;
+  sequentialCount: number;
+  sequentialHotkey: string;
   onBack: () => void;
   onToggleFavorites: () => void;
+  onToggleSequential: () => void;
   onTogglePinned: () => void;
   onSelectPinMode: (mode: WindowPinMode) => void;
   onCloseWindow: () => void;
@@ -24,8 +28,12 @@ const AppHeader = ({
   isWindowPinned,
   pinMode,
   favoritesOpen,
+  sequentialActive,
+  sequentialCount,
+  sequentialHotkey,
   onBack,
   onToggleFavorites,
+  onToggleSequential,
   onTogglePinned,
   onSelectPinMode,
   onCloseWindow,
@@ -36,6 +44,12 @@ const AppHeader = ({
   const pinTooltip = t(isWindowPinned
     ? (alwaysOnTop ? "unpin_window_top_tip" : "unpin_window_normal_tip")
     : (alwaysOnTop ? "pin_window_top_tip" : "pin_window_normal_tip"));
+  const activeTooltip = sequentialHotkey
+    ? (sequentialCount === 1 ? "sequential_btn_active_tip_one" : "sequential_btn_active_tip")
+    : (sequentialCount === 1 ? "sequential_btn_active_no_key_one" : "sequential_btn_active_no_key");
+  const sequentialTooltip = sequentialActive
+    ? t(activeTooltip).replace("{count}", String(sequentialCount)).replace("{hotkey}", sequentialHotkey)
+    : t("sequential_btn_tip");
 
   return <header className="app-header" onMouseDown={startWindowDrag}>
     <button
@@ -76,6 +90,17 @@ const AppHeader = ({
             onClick={onToggleFavorites}
           >
             <Star size={15} />
+          </button>
+          <button
+            type="button"
+            className={`icon-button sequential-button${sequentialActive ? " is-active" : ""}`}
+            title={sequentialTooltip}
+            aria-label={sequentialTooltip}
+            aria-pressed={sequentialActive}
+            onClick={onToggleSequential}
+          >
+            <ListOrdered size={15} />
+            {sequentialActive && <span className="sequential-count" aria-hidden>{sequentialCount}</span>}
           </button>
           <button
             type="button"

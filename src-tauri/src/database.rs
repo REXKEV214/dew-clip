@@ -363,7 +363,6 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("app.remote_image_max_mb", "8"),
     ("app.delete_after_paste", "false"),
     ("app.move_to_top_after_paste", "true"),
-    ("app.sequential_mode", "false"),
     ("app.sequential_hotkey", "Alt+V"),
     ("app.cleanup_rules", ""),
     ("app.app_cleanup_policies", "[]"),

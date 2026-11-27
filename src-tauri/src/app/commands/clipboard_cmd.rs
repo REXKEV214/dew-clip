@@ -21,7 +21,7 @@ fn truncate_chars_with_suffix(text: &str, max_chars: usize, suffix: &str) -> Str
 }
 
 #[tauri::command]
-pub fn toggle_clipboard_pin(
+pub async fn toggle_clipboard_pin(
     app_handle: AppHandle,
     state: State<'_, DbState>,
     session: State<'_, SessionHistory>,
@@ -30,6 +30,7 @@ pub fn toggle_clipboard_pin(
     created_at: i64,
     is_pinned: bool,
 ) -> AppResult<()> {
+    let _guard = crate::services::clipboard_ops::PASTE_LOCK.lock().await;
     let identity = EntryIdentity { id, created_at };
     if id > 0 && !state.repo.set_pin_if_current(identity, is_pinned)? {
         return Err(AppError::Validation(SELECTION_CHANGED.into()));
@@ -81,6 +82,7 @@ pub fn toggle_clipboard_pin(
         // Once persisted, the database is the sole owner of this entry.
         session_items.retain(|item| !identity.matches(item) && !saved.matches(item));
     }
+    crate::services::paste_queue::reconcile_history(&app_handle, identity, persisted, &[]).await;
 
     let _ = app_handle.emit("clipboard-changed", ());
     Ok(())

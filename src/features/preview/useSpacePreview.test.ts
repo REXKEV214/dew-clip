@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ClipboardEntry } from "../../shared/types";
-import { canPreview, entryIdFromCard } from "./useSpacePreview";
+import { canPreview, entryIdFromCard, panelAfterPreview } from "./useSpacePreview";
 
 const entry = (content_type: string) => ({ content_type }) as ClipboardEntry;
 
@@ -18,5 +18,12 @@ describe("space preview", () => {
     expect(entryIdFromCard("clipboard-item-x")).toBeNull();
     expect(entryIdFromCard("something-else")).toBeNull();
     expect(entryIdFromCard(undefined)).toBeNull();
+  });
+
+  it("returns to favorites or an active queue when Space is released", () => {
+    expect(panelAfterPreview("favorites", false)).toBe("favorites");
+    expect(panelAfterPreview("queue", true)).toBe("queue");
+    expect(panelAfterPreview("queue", false)).toBeNull();
+    expect(panelAfterPreview(null, true)).toBeNull();
   });
 });

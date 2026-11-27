@@ -6,7 +6,7 @@ use objc2::runtime::ProtocolObject;
 use objc2::ClassType;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{
-    NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypePNG, NSPasteboardTypeRTF,
+    NSPasteboard, NSPasteboardItem, NSPasteboardTypeHTML, NSPasteboardTypePNG, NSPasteboardTypeRTF,
     NSPasteboardTypeRTFD, NSPasteboardTypeString, NSPasteboardWriting,
 };
 #[cfg(target_os = "macos")]
@@ -90,28 +90,38 @@ pub struct PasteboardSnapshot {
 /// None when the content is larger than `max_bytes` in total.
 pub fn snapshot_pasteboard(max_bytes: usize) -> Option<PasteboardSnapshot> {
     #[cfg(target_os = "macos")]
-    return autoreleasepool(|_| {
-        let pb = NSPasteboard::generalPasteboard();
-        let mut total = 0usize;
-        let mut items = Vec::new();
-        if let Some(pasteboard_items) = pb.pasteboardItems() {
-            for item in pasteboard_items.iter() {
-                let mut entries = Vec::new();
-                for pasteboard_type in item.types().iter() {
-                    if let Some(data) = item.dataForType(&pasteboard_type) {
-                        total += data.len();
-                        if total > max_bytes {
-                            return None;
-                        }
-                        entries.push((pasteboard_type.to_string(), data.to_vec()));
-                    }
+    return autoreleasepool(|_| snapshot_from(&NSPasteboard::generalPasteboard(), max_bytes));
+}
+
+#[cfg(target_os = "macos")]
+fn snapshot_from(pb: &NSPasteboard, max_bytes: usize) -> Option<PasteboardSnapshot> {
+    let change_count = pb.changeCount();
+    let items = pb.pasteboardItems();
+    let snapshot = snapshot_items(items.iter().flat_map(|items| items.iter()), max_bytes)?;
+    (pb.changeCount() == change_count).then_some(snapshot)
+}
+
+#[cfg(target_os = "macos")]
+fn snapshot_items(
+    pasteboard_items: impl IntoIterator<Item = Retained<NSPasteboardItem>>,
+    max_bytes: usize,
+) -> Option<PasteboardSnapshot> {
+    let mut total = 0usize;
+    let mut items = Vec::new();
+    for item in pasteboard_items {
+        let mut entries = Vec::new();
+        for pasteboard_type in item.types().iter() {
+            if let Some(data) = item.dataForType(&pasteboard_type) {
+                total += data.len();
+                if total > max_bytes {
+                    return None;
                 }
-                items.push(entries);
+                entries.push((pasteboard_type.to_string(), data.to_vec()));
             }
         }
-        Some(PasteboardSnapshot { items })
-    });
-
+        items.push(entries);
+    }
+    Some(PasteboardSnapshot { items })
 }
 
 /// Put a snapshot back. The write is marked as the app's own, so it is not
@@ -119,27 +129,63 @@ pub fn snapshot_pasteboard(max_bytes: usize) -> Option<PasteboardSnapshot> {
 pub fn restore_pasteboard(snapshot: &PasteboardSnapshot) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     return autoreleasepool(|_| {
-        use objc2_app_kit::NSPasteboardItem;
         let pb = NSPasteboard::generalPasteboard();
         // Mark the write as ours before the data goes in: the listener can see
         // the new change count while large snapshots are still being copied.
         clear_for_own_write(&pb);
-        let mut objects: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = Vec::new();
-        for entries in &snapshot.items {
-            let item = NSPasteboardItem::new();
-            for (pasteboard_type, data) in entries {
-                item.setData_forType(&NSData::with_bytes(data), &NSString::from_str(pasteboard_type));
-            }
-            objects.push(ProtocolObject::from_retained(item));
-        }
-        let written = objects.is_empty() || pb.writeObjects(&NSArray::from_retained_slice(&objects));
-        if written {
+        let objects: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> =
+            snapshot_to_items(snapshot).into_iter().map(ProtocolObject::from_retained).collect();
+        if objects.is_empty() || pb.writeObjects(&NSArray::from_retained_slice(&objects)) {
             Ok(())
         } else {
             Err("Failed to restore the clipboard".to_string())
         }
     });
+}
 
+#[cfg(target_os = "macos")]
+fn snapshot_to_items(snapshot: &PasteboardSnapshot) -> Vec<Retained<NSPasteboardItem>> {
+    snapshot.items.iter().map(|entries| {
+        let item = NSPasteboardItem::new();
+        for (pasteboard_type, data) in entries {
+            item.setData_forType(&NSData::with_bytes(data), &NSString::from_str(pasteboard_type));
+        }
+        item
+    }).collect()
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod pasteboard_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn native_snapshot_round_trip_preserves_multiple_formats_and_items() {
+        autoreleasepool(|_| {
+            let text = NSPasteboardItem::new();
+            let file = NSPasteboardItem::new();
+            let expected = [
+                [
+                    ("public.utf8-plain-text", "Original text"),
+                    ("public.html", "<strong>Original text</strong>"),
+                ].as_slice(),
+                [("public.file-url", "file:///private/tmp/attachment.txt")].as_slice(),
+            ];
+            for (item, formats) in [&text, &file].into_iter().zip(expected) {
+                for (kind, value) in formats {
+                    assert!(item.setData_forType(&NSData::with_bytes(value.as_bytes()), &NSString::from_str(kind)));
+                }
+            }
+            let snapshot = snapshot_items([text, file], 1024).unwrap();
+            let restored = snapshot_to_items(&snapshot);
+            assert_eq!(restored.len(), expected.len());
+            for (item, formats) in restored.iter().zip(expected) {
+                assert_eq!(item.types().count(), formats.len());
+                for (kind, value) in formats {
+                    assert_eq!(item.dataForType(&NSString::from_str(kind)).unwrap().to_vec(), value.as_bytes());
+                }
+            }
+        });
+    }
 }
 
 /// Text that clipboard history apps, the app included, are asked not to record

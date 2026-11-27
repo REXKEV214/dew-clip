@@ -1,55 +1,11 @@
 use crate::app::commands::hotkey_cmd::sync_registered_hotkeys;
-use crate::app_state::{PasteQueue, SettingsState};
+use crate::app_state::SettingsState;
 use crate::database::DbState;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::macos_api::window::{self as panel, WindowPinMode, PIN_MODE_KEY};
 use crate::infrastructure::repository::settings_repo::SettingsRepository;
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Manager, State};
-
-#[tauri::command]
-pub fn set_sequential_mode(
-    app_handle: AppHandle,
-    state: State<'_, crate::app_state::SettingsState>,
-    enabled: bool,
-) {
-    state.sequential_mode.store(enabled, Ordering::Relaxed);
-    let db_state = app_handle.state::<DbState>();
-    let _ = db_state
-        .settings_repo
-        .set("app.sequential_mode", &enabled.to_string());
-
-    if !enabled {
-        let paste_queue = app_handle.state::<PasteQueue>();
-        let mut queue = paste_queue.inner().0.lock().unwrap();
-        queue.items.clear();
-        queue.last_action_was_paste = false;
-    }
-
-    let _ = sync_registered_hotkeys(&app_handle);
-}
-
-#[tauri::command]
-pub fn set_sequential_hotkey(
-    app_handle: AppHandle,
-    state: State<'_, SettingsState>,
-    hotkey: String,
-) -> AppResult<()> {
-    if let Ok(mut guard) = state.sequential_paste_hotkey.lock() {
-        *guard = hotkey.clone();
-    }
-
-    let db_state = app_handle.state::<DbState>();
-    db_state
-        .settings_repo
-        .set("app.sequential_hotkey", &hotkey)
-        .map_err(AppError::from)?;
-
-    sync_registered_hotkeys(&app_handle)
-}
-
-
-
 
 #[tauri::command]
 pub fn save_setting(
@@ -79,11 +35,8 @@ pub fn save_setting(
         return Ok(());
     }
     match key.as_str() {
-        "app.sequential_mode" => {
-            settings_state
-                .sequential_mode
-                .store(value == "true", Ordering::Relaxed);
-        }
+        "app.hotkey" => return super::hotkey_cmd::register_hotkey(app_handle, value),
+        "app.sequential_hotkey" => return super::hotkey_cmd::set_sequential_hotkey(app_handle, value),
         "app.persistent" => {
             settings_state
                 .persistent
@@ -138,7 +91,11 @@ pub fn save_setting(
     db_state
         .settings_repo
         .set(&key, &value)
-        .map_err(AppError::from)
+        .map_err(AppError::from)?;
+    if key == "app.language" {
+        crate::app::tray::refresh_tray(&app_handle);
+    }
+    Ok(())
 }
 
 
@@ -303,6 +260,7 @@ pub fn reset_settings(
     // Running state follows the defaults now, not after the next start.
     let fresh = crate::app::setup::load_settings(&state.settings_repo)?;
     settings_state.take_values_from(crate::app::setup::settings_state_from(&fresh));
+    crate::app::tray::refresh_tray(&app);
     panel::refresh_clipboard_panel_policy(&app)
         .map_err(|error| AppError::Internal(error.to_string()))?;
     *crate::global_state::HOTKEY_STRING.lock().unwrap() = fresh.main_hotkey.clone();
@@ -320,7 +278,7 @@ pub fn set_tray_visible(
     visible: bool,
 ) -> AppResult<()> {
     state.hide_tray_icon.store(!visible, Ordering::Relaxed);
-    if let Some(tray) = app_handle.tray_by_id("main_tray") {
+    if let Some(tray) = app_handle.tray_by_id(crate::app::tray::TRAY_ID) {
         let _ = tray.set_visible(visible);
     }
     let db_state = app_handle.state::<DbState>();

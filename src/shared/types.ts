@@ -57,6 +57,6 @@ export interface ConfirmDialogState {
 
 export type Translate = (key: string) => string;
 
-export type SidePanelKind = "favorites" | "edit" | "translate" | "batch" | "preview";
+export type SidePanelKind = "favorites" | "edit" | "translate" | "batch" | "preview" | "queue";
 
 export type WindowPinMode = "always_on_top" | "normal";

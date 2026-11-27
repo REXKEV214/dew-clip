@@ -3,7 +3,7 @@ import { Reorder, useDragControls } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronUp, FileText, GripVertical, Play, Trash2, X } from "lucide-react";
 import type { ClipboardEntry, Translate } from "../../shared/types";
-import { entryKey, isTextEntry } from "../../shared/lib/clipboardTypes";
+import { entryKey, isTextEntry, type EntryKey } from "../../shared/lib/clipboardTypes";
 import { useImageThumbnail, useVideoThumbnail } from "../../shared/hooks/useImageThumbnail";
 import { showNativeMenu, type NativeMenuItem } from "../../shared/lib/nativeMenu";
 import { startWindowDrag } from "../../shared/lib/windowDrag";
@@ -28,6 +28,7 @@ interface BatchPanelProps {
   deleteAfterPaste: boolean;
   moveToTopAfterPaste: boolean;
   onPasteFailed: (error: unknown) => void;
+  onStartSequential: (entries: EntryKey[]) => Promise<void>;
   onClose: () => void;
 }
 
@@ -125,6 +126,7 @@ const BatchPanel = ({
   deleteAfterPaste,
   moveToTopAfterPaste,
   onPasteFailed,
+  onStartSequential,
   onClose,
 }: BatchPanelProps) => {
   const [connector, setConnector] = useState<ConnectorId>(DEFAULT_CONNECTOR);
@@ -189,6 +191,16 @@ const BatchPanel = ({
 
   const countText = selectionCountText(t, items.length, hasMore, allVisibleSelected);
   const busy = pasting || deleting;
+  const startSequential = async () => {
+    setPasting(true);
+    try {
+      await onStartSequential(localOrder.map(entryKey));
+    } catch (error) {
+      onPasteFailed(error);
+    } finally {
+      setPasting(false);
+    }
+  };
 
   return (
     <div className="side-panel-body">
@@ -231,6 +243,14 @@ const BatchPanel = ({
         </div>
       </div>
       <div className="panel-actions batch-panel-actions">
+        <button
+          type="button"
+          className="glass-button batch-sequential-button"
+          disabled={localOrder.length === 0 || busy}
+          onClick={() => void startSequential()}
+        >
+          {t("sequential_from_batch")}
+        </button>
         <button
           type="button"
           className="glass-button is-danger is-compact batch-delete-button"

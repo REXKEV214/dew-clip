@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import AppHeader from "./features/app/AppHeader";
 import SearchBox, { type SearchBoxHandle } from "./features/app/SearchBox";
 import TypeTabs from "./features/app/TypeTabs";
 import FixedPositionBanner from "./features/app/FixedPositionBanner";
+import RecordingPauseBanner, { useRecordingPause } from "./features/app/RecordingPauseBanner";
 import { useSettings } from "./features/app/useSettings";
 import { useOverlays } from "./features/app/useOverlays";
 import { useHistory } from "./features/app/useHistory";
@@ -21,6 +23,8 @@ import EditPanel from "./features/edit/EditPanel";
 import TranslatePanel from "./features/translate/TranslatePanel";
 import type { TranslationConfig } from "./features/translate/config";
 import BatchPanel from "./features/batch/BatchPanel";
+import QueuePanel from "./features/queue/QueuePanel";
+import { useSequentialQueue } from "./features/queue/useSequentialQueue";
 import {
   allVisibleSelected,
   applyEntryStates,
@@ -31,10 +35,11 @@ import {
   selectAllVisible,
   selectionCounts,
   toggleSelectAllVisible,
+  type EntryKey,
   type EntryState,
 } from "./features/batch/batchSelection";
 import PreviewPanel from "./features/preview/PreviewPanel";
-import { useSpacePreview } from "./features/preview/useSpacePreview";
+import { panelAfterPreview, useSpacePreview } from "./features/preview/useSpacePreview";
 import SettingsPage from "./features/settings/components/SettingsPage";
 import { useIgnoredApps } from "./features/settings/useIgnoredApps";
 import PermissionOnboarding from "./shared/components/PermissionOnboarding";
@@ -45,7 +50,9 @@ import { useLiveSearch } from "./shared/hooks/useLiveSearch";
 import { isTextEntry, type TypeFilter } from "./shared/lib/clipboardTypes";
 import { showNativeMenu, type NativeMenuItem } from "./shared/lib/nativeMenu";
 import { isTauriRuntime } from "./shared/lib/tauriRuntime";
-import type { ClipboardEntry, WindowPinMode } from "./shared/types";
+import { getHotkeyDisplayTokens } from "./shared/lib/hotkeyDisplay";
+import { formatError } from "./shared/lib/errorMessage";
+import type { ClipboardEntry, SidePanelKind, WindowPinMode } from "./shared/types";
 
 /** How much the CSS tint shows on systems with frosted glass only. */
 const FROSTED_TINT_MAX = 0.72;
@@ -65,6 +72,13 @@ const App = () => {
   const { toasts, pushToast, confirmDialog, openConfirm, closeConfirm } = useOverlays(t);
   const ignoredApps = useIgnoredApps(settings, pushToast);
   const addIgnoredApp = ignoredApps.add;
+  const recordingPause = useRecordingPause();
+  const queue = useSequentialQueue();
+  const sequentialActive = queue.kind !== "inactive";
+  const sequentialActiveRef = useRef(sequentialActive);
+  sequentialActiveRef.current = sequentialActive;
+  const sequentialHotkey = getHotkeyDisplayTokens(values["app.sequential_hotkey"] ?? "Alt+V", { preferMacSymbols: true })
+    .map(({ label }) => label).join("");
 
   const [showSettings, setShowSettings] = useState(false);
   const liveSearch = useLiveSearch(SEARCH_DELAY_MS);
@@ -105,6 +119,13 @@ const App = () => {
   const { panel, open: openPanel, close: closePanel } = useSidePanel();
   const batchMode = panel.kind === "batch";
   const searchPending = draft.trim() !== search || !settled;
+  const openQueuePanel = useCallback(() => {
+    setShowSettings(false);
+    setEditing(null);
+    setBatchItems([]);
+    setPreviewEntry(null);
+    void openPanel("queue");
+  }, [openPanel]);
   const itemsRef = useRef(items);
   itemsRef.current = items;
   const batchItemsRef = useRef(batchItems);
@@ -129,6 +150,13 @@ const App = () => {
     moveToTopAfterPaste,
     afterPaste: clearSearch,
   });
+  const sequentialFailed = useCallback((error: unknown) => {
+    const message = String(error);
+    const localized = ["sequential_inactive", "sequential_queue_changed", "sequential_release_modifiers"]
+      .find((key) => message.includes(key));
+    if (localized) pushToast(t(localized), 3000);
+    else failed(error);
+  }, [failed, pushToast, t]);
 
   const toggleBatch = useCallback((item: ClipboardEntry) => {
     setBatchItems((prev) =>
@@ -233,6 +261,12 @@ const App = () => {
       } else {
         menu = [favorite("add_favorite_file"), batch];
       }
+      if (sequentialActive) {
+        menu.push({
+          text: t("sequential_add_to_queue"),
+          action: () => void invoke("enqueue_sequential_entry", { entry: entryKey(item) }).catch(sequentialFailed),
+        });
+      }
       const share: NativeMenuItem = { text: t("share"), action: () => shareEntry(item) };
       const path = item.source_app_path?.trim();
       const ignoreApp: NativeMenuItem = {
@@ -242,7 +276,7 @@ const App = () => {
       };
       void showNativeMenu([open, ...menu, ignoreApp, share]);
     },
-    [addFavorite, addIgnoredApp, paste, pushToast, shareEntry, startBatch, t]
+    [addFavorite, addIgnoredApp, paste, pushToast, sequentialActive, sequentialFailed, shareEntry, startBatch, t]
   );
 
   const pasteImageTextEntry = useCallback(
@@ -295,6 +329,27 @@ const App = () => {
     void closePanel();
   }, [closePanel]);
 
+  const previousQueueKind = useRef(queue.kind);
+  useEffect(() => {
+    if (previousQueueKind.current === queue.kind) return;
+    previousQueueKind.current = queue.kind;
+    if (!sequentialActive) {
+      if (panel.kind === "queue") closeSidePanel();
+      return;
+    }
+    if (isTauriRuntime()) {
+      void getCurrentWindow().isVisible().then((visible) => {
+        if (visible && sequentialActiveRef.current) openQueuePanel();
+      }).catch(console.error);
+    }
+  }, [closeSidePanel, openQueuePanel, panel.kind, queue.kind, sequentialActive]);
+
+  const stopSequential = () => void invoke("stop_sequential_session").catch(sequentialFailed);
+  const startSequentialFromBatch = async (entries: EntryKey[]) => {
+    await invoke("start_sequential_from_entries", { entries });
+    if (windowPinnedRef.current) openQueuePanel();
+  };
+
   const batchDeletingRef = useRef(false);
   const deleteBatch = useCallback(
     async (frozen: EntryState[]) => {
@@ -343,12 +398,12 @@ const App = () => {
     });
   }, [closeConfirm, deleteBatch, openConfirm, t]);
 
-  // A preview borrows the panel area: 常用 comes back when it ends.
-  const favoritesUnderPreview = useRef(false);
+  // A preview temporarily borrows the panel area from favorites or the queue.
+  const panelUnderPreview = useRef<SidePanelKind | null>(null);
 
   const showPreview = useCallback(
     (entry: ClipboardEntry) => {
-      favoritesUnderPreview.current = panel.kind === "favorites";
+      panelUnderPreview.current = panel.kind;
       setPreviewEntry(entry);
       void openPanel("preview");
     },
@@ -357,7 +412,9 @@ const App = () => {
 
   const hidePreview = useCallback(() => {
     setPreviewEntry(null);
-    void (favoritesUnderPreview.current ? openPanel("favorites") : closePanel());
+    const restore = panelAfterPreview(panelUnderPreview.current, sequentialActiveRef.current);
+    panelUnderPreview.current = null;
+    void (restore ? openPanel(restore) : closePanel());
   }, [closePanel, openPanel]);
 
   const toggleFavorites = useCallback(() => {
@@ -475,6 +532,7 @@ const App = () => {
         setTypeFilter(null);
         clearSelection();
         listRef.current?.scrollToTop();
+        if (sequentialActiveRef.current) openQueuePanel();
       }),
       listen<boolean>("window-pinned-changed", ({ payload }) => updateWindowPinned(payload)),
       // A close (hotkey, red button) was refused because the window is pinned.
@@ -490,7 +548,7 @@ const App = () => {
     return () => {
       subscriptions.forEach((subscription) => void subscription.then((off) => off()));
     };
-  }, [clearSelection, updateWindowPinned]);
+  }, [clearSelection, openQueuePanel, updateWindowPinned]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -635,8 +693,12 @@ const App = () => {
           isWindowPinned={isWindowPinned}
           pinMode={pinMode}
           favoritesOpen={panel.kind === "favorites"}
+          sequentialActive={sequentialActive}
+          sequentialCount={queue.items.length}
+          sequentialHotkey={sequentialHotkey}
           onBack={leaveSettings}
           onToggleFavorites={toggleFavorites}
+          onToggleSequential={sequentialActive ? stopSequential : () => void invoke("start_sequential_session").catch(sequentialFailed)}
           onTogglePinned={togglePinned}
           onSelectPinMode={(mode) => selectPinMode(mode, true)}
           onCloseWindow={() => void invoke("hide_window_cmd").catch(console.error)}
@@ -646,6 +708,14 @@ const App = () => {
             setShowSettings(true);
           }}
         />
+
+        {recordingPause?.paused && (
+          <RecordingPauseBanner
+            t={t}
+            resumeAt={recordingPause.resumeAt}
+            onResume={() => void invoke("resume_recording").catch((error) => pushToast(t("save_failed") + formatError(error, t)))}
+          />
+        )}
 
         {showSettings ? (
           <SettingsPage
@@ -735,6 +805,18 @@ const App = () => {
           {panel.kind === "preview" && previewEntry && (
             <PreviewPanel key={`${previewEntry.id}:${previewEntry.created_at ?? 0}`} t={t} entry={previewEntry} />
           )}
+          {panel.kind === "queue" && sequentialActive && (
+            <QueuePanel
+              t={t}
+              items={queue.items}
+              hotkey={sequentialHotkey}
+              onReorder={(queueIds) => void invoke("reorder_sequential_queue", { queueIds }).catch(sequentialFailed)}
+              onRemove={(queueId) => void invoke("remove_sequential_entry", { queueId }).catch(sequentialFailed)}
+              onClear={() => void invoke("clear_sequential_queue").catch(sequentialFailed)}
+              onEnd={stopSequential}
+              onPaste={() => void invoke("paste_next_step").catch(sequentialFailed)}
+            />
+          )}
           {panel.kind === "batch" && (
             <BatchPanel
               t={t}
@@ -750,6 +832,7 @@ const App = () => {
               deleteAfterPaste={deleteAfterPaste}
               moveToTopAfterPaste={moveToTopAfterPaste}
               onPasteFailed={failed}
+              onStartSequential={startSequentialFromBatch}
               onClose={closeSidePanel}
             />
           )}

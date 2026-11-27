@@ -14,30 +14,52 @@ pub static WINDOW_PINNED: AtomicBool = AtomicBool::new(false);
 /// Who has the clipboard monitor paused (hotkey recording, a batch paste).
 /// It stays paused until every owner has let go: one finishing first used to
 /// resume it under the other.
-static MONITOR_PAUSE_OWNERS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+pub(crate) static MONITOR_PAUSE: Mutex<MonitorPause> = Mutex::new(MonitorPause {
+    owners: Vec::new(),
+    discard_through: None,
+});
 
 pub const PAUSE_HOTKEY_RECORDING: &str = "hotkey_recording";
 pub const PAUSE_BATCH_PASTE: &str = "batch_paste";
+pub const PAUSE_USER: &str = "user_pause";
 
-pub fn pause_clipboard_monitor(owner: &'static str) {
-    let mut owners = MONITOR_PAUSE_OWNERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !owners.contains(&owner) {
-        owners.push(owner);
+#[derive(Default)]
+pub(crate) struct MonitorPause {
+    owners: Vec<&'static str>,
+    pub(crate) discard_through: Option<isize>,
+}
+
+impl MonitorPause {
+    pub(crate) fn pause(&mut self, owner: &'static str) {
+        if !self.owners.contains(&owner) {
+            self.owners.push(owner);
+        }
+    }
+
+    pub(crate) fn resume(&mut self, owner: &'static str) {
+        self.owners.retain(|held| *held != owner);
+    }
+
+    pub(crate) fn finish_user_pause(&mut self, change_count: isize) {
+        self.discard_through = Some(change_count);
+        self.resume(PAUSE_USER);
+    }
+
+    pub(crate) fn is_user_paused(&self) -> bool {
+        self.owners.contains(&PAUSE_USER)
+    }
+
+    pub(crate) fn is_paused(&self) -> bool {
+        !self.owners.is_empty()
     }
 }
 
-pub fn resume_clipboard_monitor(owner: &'static str) {
-    MONITOR_PAUSE_OWNERS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .retain(|held| *held != owner);
+pub fn pause_clipboard_monitor(owner: &'static str) {
+    MONITOR_PAUSE.lock().unwrap().pause(owner);
 }
 
-pub fn is_clipboard_monitor_paused() -> bool {
-    !MONITOR_PAUSE_OWNERS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .is_empty()
+pub fn resume_clipboard_monitor(owner: &'static str) {
+    MONITOR_PAUSE.lock().unwrap().resume(owner);
 }
 
 static BLUR_GUARD_OWNERS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -78,22 +100,20 @@ mod blur_guard_tests {
 
     #[test]
     fn monitor_stays_paused_until_every_owner_resumes() {
-        resume_clipboard_monitor(PAUSE_HOTKEY_RECORDING);
-        resume_clipboard_monitor(PAUSE_BATCH_PASTE);
-        assert!(!is_clipboard_monitor_paused());
-
-        pause_clipboard_monitor(PAUSE_BATCH_PASTE);
-        pause_clipboard_monitor(PAUSE_HOTKEY_RECORDING);
+        let mut monitor = MonitorPause::default();
+        assert!(!monitor.is_paused());
+        monitor.pause(PAUSE_BATCH_PASTE);
+        monitor.pause(PAUSE_HOTKEY_RECORDING);
         // Recording ends first: the batch paste still holds the pause.
-        resume_clipboard_monitor(PAUSE_HOTKEY_RECORDING);
-        assert!(is_clipboard_monitor_paused());
+        monitor.resume(PAUSE_HOTKEY_RECORDING);
+        assert!(monitor.is_paused());
         // A repeated start is the same owner, not a second hold.
-        pause_clipboard_monitor(PAUSE_HOTKEY_RECORDING);
-        pause_clipboard_monitor(PAUSE_HOTKEY_RECORDING);
-        resume_clipboard_monitor(PAUSE_HOTKEY_RECORDING);
-        assert!(is_clipboard_monitor_paused());
-        resume_clipboard_monitor(PAUSE_BATCH_PASTE);
-        assert!(!is_clipboard_monitor_paused());
+        monitor.pause(PAUSE_HOTKEY_RECORDING);
+        monitor.pause(PAUSE_HOTKEY_RECORDING);
+        monitor.resume(PAUSE_HOTKEY_RECORDING);
+        assert!(monitor.is_paused());
+        monitor.resume(PAUSE_BATCH_PASTE);
+        assert!(!monitor.is_paused());
     }
 
     #[test]

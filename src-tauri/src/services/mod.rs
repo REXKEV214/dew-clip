@@ -6,6 +6,7 @@ pub mod encryption_queue;
 pub mod markdown;
 pub mod ocr;
 pub mod paste_queue;
+pub mod recording_pause;
 pub mod sensitive_align;
 pub mod storage_manager;
 pub mod translate;

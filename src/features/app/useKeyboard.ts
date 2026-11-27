@@ -53,6 +53,8 @@ export const useKeyboard = (options: KeyboardOptions) => {
     const onKeyDown = (event: KeyboardEvent) => {
       const current = ref.current;
       if (event.defaultPrevented && !isBrowserFindSuppressed(event)) return;
+      if ((event.key === "ArrowUp" || event.key === "ArrowDown") && event.target instanceof Element &&
+          event.target.closest("[data-queue-reorder]")) return;
       const inSearch = event.target instanceof HTMLElement && event.target.classList.contains("searchbox-input");
       if (event.keyCode === 229 || current.isSearchComposing(inSearch)) return;
       const action = resolveKey(event, {

@@ -1,6 +1,6 @@
 use crate::app::commands::thumbnail_cmd::{thumbnail_dir, THUMBNAIL_WRITERS};
 use crate::app::data_directory::session_storage_root;
-use crate::app_state::{AppDataDir, PasteQueue, SessionHistory, SettingsState};
+use crate::app_state::{AppDataDir, SessionHistory, SettingsState};
 use crate::database::{DbState, ATTACHMENT_WRITERS, BYTES_PER_MB};
 use crate::domain::models::{ClipboardEntry, EntryIdentity};
 use crate::error::{AppError, AppResult};
@@ -293,12 +293,13 @@ fn run_maintenance(app: &AppHandle, wait: bool) -> AppResult<(usize, bool)> {
         Ok(true)
     })();
     if !deleted.is_empty() {
-        app.state::<PasteQueue>()
-            .0
-            .lock()
-            .unwrap()
-            .items
-            .retain(|item| !deleted.contains(item));
+        // The queue's own removal keeps its counts, hotkey and events in step.
+        let queue_app = app.clone();
+        let removed = deleted.clone();
+        tauri::async_runtime::spawn(async move {
+            let _guard = crate::services::clipboard_ops::PASTE_LOCK.lock().await;
+            crate::services::paste_queue::remove_deleted_items(&queue_app, |identity| removed.contains(&identity)).await;
+        });
         let _ = app.emit("clipboard-changed", ());
     }
     run.map(|completed| (deleted.len(), completed))

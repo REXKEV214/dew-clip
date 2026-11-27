@@ -16,7 +16,7 @@ use crate::services::encryption_queue::init_encryption_queue;
 use crate::services::sensitive_align::spawn_sensitive_alignment;
 
 #[cfg(target_os = "macos")]
-fn register_macos_wake_hotkey_refresh(app_handle: AppHandle) {
+fn register_macos_wake_handler(app_handle: AppHandle) {
     use block2::RcBlock;
     use objc2_app_kit::{NSWorkspace, NSWorkspaceDidWakeNotification};
     use objc2_foundation::NSNotification;
@@ -25,6 +25,8 @@ fn register_macos_wake_hotkey_refresh(app_handle: AppHandle) {
 
     let center = NSWorkspace::sharedWorkspace().notificationCenter();
     let wake_handler = RcBlock::new(move |_notification: NonNull<NSNotification>| {
+        crate::services::recording_pause::check_expired_pause(&app_handle);
+        tauri::async_runtime::spawn(crate::services::paste_queue::check_idle_after_wake(app_handle.clone()));
         let app_handle = app_handle.clone();
         std::thread::spawn(move || {
             // macOS may need a short moment to restore Carbon event hotkeys after wake.
@@ -83,7 +85,7 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
 
     #[cfg(target_os = "macos")]
-    register_macos_wake_hotkey_refresh(app_handle.clone());
+    register_macos_wake_handler(app_handle.clone());
     #[cfg(target_os = "macos")]
     register_macos_pinned_escape_monitor(app_handle.clone());
     #[cfg(target_os = "macos")]
@@ -149,6 +151,7 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     crate::app::commands::thumbnail_cmd::init_thumbnail_cache(app.handle());
     crate::app::data_directory::prepare_session(&app_dir)?;
     setup_state(app, conn_arc.clone(), &settings, app_dir.clone());
+    app.manage(crate::services::recording_pause::RecordingPause::default());
     crate::services::clipboard::start_session_file_sweeper(app.handle().clone());
     app.manage(EncryptionQueueState(init_encryption_queue(app_handle.clone())));
     spawn_sensitive_alignment(app_handle.clone());
@@ -164,7 +167,7 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     start_services(app, &settings, app_handle.clone());
 
     // 9. Tray Setup
-    setup_tray(app, settings.hide_tray_icon);
+    crate::app::tray::setup_tray(app, settings.hide_tray_icon)?;
 
     Ok(())
 }
@@ -257,7 +260,6 @@ pub struct StartupSettings {
     pub delete_after_paste: bool,
     pub cleanup_rules: String,
     pub app_cleanup_policies: String,
-    pub sequential_mode: bool,
     pub sequential_hotkey: String,
     pub hide_tray_icon: bool,
     pub hide_dock_icon: bool,
@@ -302,9 +304,6 @@ pub(crate) fn load_settings(repo: &SqliteSettingsRepository) -> rusqlite::Result
         delete_after_paste: flag("app.delete_after_paste", false),
         cleanup_rules: get("app.cleanup_rules", ""),
         app_cleanup_policies: get("app.app_cleanup_policies", "[]"),
-        // 顺序粘贴 has no switch in Settings any more: always off, so a mode
-        // turned on earlier can't keep its hotkey with no way to turn it off.
-        sequential_mode: false,
         sequential_hotkey: get("app.sequential_hotkey", "Alt+V"),
         hide_tray_icon: flag("app.hide_tray_icon", false),
         hide_dock_icon: flag("app.hide_dock_icon", false),
@@ -374,7 +373,6 @@ pub(crate) fn settings_state_from(s: &StartupSettings) -> SettingsState {
         delete_after_paste: AtomicBool::new(s.delete_after_paste),
         cleanup_rules: std::sync::Mutex::new(s.cleanup_rules.clone()),
         app_cleanup_policies: std::sync::Mutex::new(s.app_cleanup_policies.clone()),
-        sequential_mode: AtomicBool::new(s.sequential_mode),
         sequential_paste_hotkey: std::sync::Mutex::new(s.sequential_hotkey.clone()),
         hide_tray_icon: AtomicBool::new(s.hide_tray_icon),
         hide_dock_icon: AtomicBool::new(s.hide_dock_icon),
@@ -526,99 +524,29 @@ fn start_services(app: &App, s: &StartupSettings, app_handle: AppHandle) {
 }
 
 
-fn setup_tray(app: &App, hide_tray: bool) {
-    use tauri::menu::{Menu, MenuItem};
-    use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
-
-    let english = app
-        .state::<DbState>()
-        .settings_repo
-        .get("app.language")
-        .ok()
-        .flatten()
-        .map(|lang| lang == "en")
-        .unwrap_or(false);
-    let (show_label, quit_label) = if english {
-        ("Open DewClip", "Quit")
-    } else {
-        ("打开 DewClip", "退出")
-    };
-    let show_i = MenuItem::with_id(app, "show", show_label, true, None::<&str>).unwrap();
-    let quit_i = MenuItem::with_id(app, "quit", quit_label, true, None::<&str>).unwrap();
-    let menu = Menu::with_items(app, &[&show_i, &quit_i]).unwrap();
-    let icon =
-        tauri::image::Image::from_bytes(include_bytes!("../../icons/tray-icon.png")).unwrap();
-
-    let mut tray_builder = TrayIconBuilder::with_id("main_tray")
-        .icon(icon)
-        .tooltip("DewClip")
-        .show_menu_on_left_click(false)
-        .menu(&menu)
-        .on_menu_event(|app, event| {
-            if event.id.as_ref() == "show" {
-                let _ = crate::app::window_manager::focus_clipboard_window(app.clone());
-            } else if event.id.as_ref() == "quit" {
-                crate::app::system::request_app_exit(app);
-            }
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                ..
-            } = event
-            {
-                // Same intentional-open path as Dock reopen (make-key + LAST_SHOW).
-                let _ = crate::app::window_manager::focus_clipboard_window(tray.app_handle().clone());
-            }
-        });
-
-    #[cfg(target_os = "macos")]
-    {
-        tray_builder = tray_builder.icon_as_template(true);
-    }
-
-    let tray = tray_builder.build(app).expect("Failed to build tray");
-
-    let _ = tray.set_visible(!hide_tray);
-    app.manage(tray);
-}
-
-
-
-
-
 pub fn handle_global_shortcut(
     app: &AppHandle,
     shortcut: &tauri_plugin_global_shortcut::Shortcut,
     state: tauri_plugin_global_shortcut::ShortcutState,
 ) {
-    use tauri_plugin_global_shortcut::Shortcut;
+    use crate::app::commands::hotkey_cmd::parse_shortcut;
     use tauri_plugin_global_shortcut::ShortcutState;
     let settings = app.state::<SettingsState>();
 
-    if state == ShortcutState::Pressed {
-        if let Ok(main_s) = {
-            let val = settings.main_hotkey.lock().unwrap().clone();
-            val.replace("Win", "Super").parse::<Shortcut>()
-        } {
-            if shortcut == &main_s {
-                toggle_window(app);
-                return;
-            }
+    let main = parse_shortcut(&settings.main_hotkey.lock().unwrap());
+    if main.as_ref() == Some(shortcut) {
+        if state == ShortcutState::Pressed {
+            toggle_window(app);
         }
-
-    } else if state == ShortcutState::Released {
-        if let Ok(seq_s) = {
-            let val = settings.sequential_paste_hotkey.lock().unwrap().clone();
-            val.replace("Win", "Super").parse::<Shortcut>()
-        } {
-            if shortcut == &seq_s {
-                if settings.sequential_mode.load(Ordering::Relaxed) {
-                    crate::services::paste_queue::paste_next_step(app.clone());
-                }
+    } else if state == ShortcutState::Released
+        && parse_shortcut(&settings.sequential_paste_hotkey.lock().unwrap()).as_ref() == Some(shortcut)
+    {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = crate::services::paste_queue::paste_next_step(app).await {
+                crate::error!("Sequential paste: {error}");
             }
-        }
-
+        });
     }
 }
 

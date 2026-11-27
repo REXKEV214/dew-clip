@@ -34,6 +34,8 @@ const K_CG_EVENT_FLAG_MASK_COMMAND: CGEventFlags = 1 << 20;
 #[cfg(target_os = "macos")]
 const K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE: CGEventSourceStateID = 1;
 #[cfg(target_os = "macos")]
+const K_CG_EVENT_SOURCE_STATE_COMBINED_SESSION_STATE: CGEventSourceStateID = 0;
+#[cfg(target_os = "macos")]
 pub(crate) const V_KEY_CODE: CGKeyCode = 9;
 
 #[cfg(target_os = "macos")]
@@ -45,6 +47,7 @@ unsafe extern "C" {
 
     fn CGPreflightPostEventAccess() -> bool;
     fn CGEventSourceCreate(state_id: CGEventSourceStateID) -> CGEventSourceRef;
+    fn CGEventSourceFlagsState(state_id: CGEventSourceStateID) -> CGEventFlags;
     fn CGEventCreateKeyboardEvent(
         source: CGEventSourceRef,
         virtual_key: CGKeyCode,
@@ -108,6 +111,11 @@ pub fn has_accessibility_permission() -> bool {
         return trusted_with_prompt(false) || unsafe { CGPreflightPostEventAccess() };
     }
 
+}
+
+pub fn prompt_accessibility_permission() {
+    #[cfg(target_os = "macos")]
+    let _ = trusted_with_prompt(true);
 }
 
 /// What asking for the permission led to.
@@ -174,6 +182,17 @@ pub fn request_accessibility_permission(bundle_id: &str) -> PermissionRequest {
         return outcome;
     }
 
+}
+
+pub fn are_paste_modifiers_released() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // Shift, Control, Option and Command occupy bits 17 through 20.
+        const MODIFIERS: CGEventFlags = 0b1111 << 17;
+        unsafe { CGEventSourceFlagsState(K_CG_EVENT_SOURCE_STATE_COMBINED_SESSION_STATE) & MODIFIERS == 0 }
+    }
+    #[cfg(not(target_os = "macos"))]
+    true
 }
 
 pub fn send_command_v() -> bool {

@@ -109,19 +109,22 @@ const SettingsPage = ({
   }, []);
 
   const hotkey = values["app.hotkey"] ?? "";
+  const sequentialHotkey = values["app.sequential_hotkey"] ?? "Alt+V";
 
-  const recordWakeHotkey = async (next: string) => {
+  const recordHotkey = async (next: string, sequential: boolean) => {
     try {
-      await invoke("test_hotkey_available", { hotkey: next, allowTyping: true });
+      await invoke("test_hotkey_available", { hotkey: next, allowTyping: !sequential, forSequential: sequential });
+      await invoke(sequential ? "set_sequential_hotkey" : "register_hotkey", { hotkey: next });
+      remember(sequential ? "app.sequential_hotkey" : "app.hotkey", next);
     } catch (error) {
-      pushToast(`${next}: ${formatError(error, t) || t("hotkey_occupied")}`, 4000);
-      return;
-    }
-    try {
-      await invoke("register_hotkey", { hotkey: next });
-      remember("app.hotkey", next);
-    } catch (error) {
-      pushToast(t("hotkey_register_failed") + String(error), 3000);
+      const reason = String(error);
+      if (reason.includes("hotkey_conflict")) {
+        pushToast(t("hotkey_conflict").replace("{name}", t(sequential ? "wake_hotkey" : "sequential_paste_hotkey")), 4000);
+      } else if (reason.includes("sequential_invalid_hotkey")) {
+        pushToast(t("sequential_invalid_hotkey"), 4000);
+      } else {
+        pushToast(t("hotkey_register_failed") + (formatError(error, t) || t("hotkey_occupied")), 4000);
+      }
     }
   };
 
@@ -206,7 +209,7 @@ const SettingsPage = ({
     <div className="settings-page">
       <Section title={t("section_common")} open={!!openSections.common} onToggle={() => toggleSection("common")}>
         <Row label={t("wake_hotkey")} subtitle={t("hotkey_click_hint")}>
-          <HotkeyField t={t} value={hotkey} label={t("wake_hotkey")} onRecorded={recordWakeHotkey} />
+          <HotkeyField t={t} value={hotkey} label={t("wake_hotkey")} onRecorded={(next) => recordHotkey(next, false)} />
         </Row>
         <Row label={t("autostart")} hint={t("autostart_hint")}>
           <Toggle
@@ -383,6 +386,14 @@ const SettingsPage = ({
       </Section>
 
       <Section title={t("section_paste")} open={!!openSections.paste} onToggle={() => toggleSection("paste")}>
+        <Row label={t("sequential_paste_hotkey")} hint={t("sequential_paste_hotkey_inactive")}>
+          <HotkeyField
+            t={t}
+            value={sequentialHotkey}
+            label={t("sequential_paste_hotkey")}
+            onRecorded={(next) => recordHotkey(next, true)}
+          />
+        </Row>
         <Row label={t("delete_after_paste")} hint={t("delete_after_paste_hint")}>
           <Toggle
             label={t("delete_after_paste")}
