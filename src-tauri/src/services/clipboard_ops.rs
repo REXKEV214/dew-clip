@@ -233,13 +233,6 @@ async fn copy_to_clipboard_inner(
     // window hand-off and the simulated keystroke are skipped.
     let paste_blocked = paste && paste_permission_missing();
     let paste = paste && !paste_blocked;
-    println!(
-        "[DEBUG] copy_to_clipboard called: id={}, paste={}, content_type={}, content_len={}",
-        id,
-        paste,
-        content_type,
-        content.len()
-    );
 
     let mut html_content: Option<String> = None;
 
@@ -922,7 +915,6 @@ fn copy_image_bytes_to_clipboard(bytes: Vec<u8>, source_path: Option<&str>) -> A
 }
 
 async fn copy_text_with_retry(content: &str) -> AppResult<()> {
-    println!("[DEBUG] Copying text to clipboard: {} chars", content.len());
     // Use the platform line-ending conversion without trimming. In particular,
     // trailing spaces and tabs are part of the clipboard payload and must survive
     // a history-item click exactly as captured.
@@ -1056,11 +1048,11 @@ pub fn send_paste_keystroke() -> AppResult<()> {
     // payload was prepared. Do not schedule another NSPanel resign here: it
     // can race the Command+V event.
     if !crate::infrastructure::macos_api::permissions::has_accessibility_permission() {
-        println!("[WARN] Accessibility permission missing; open Settings → Privacy → Accessibility");
+        crate::error!("Accessibility permission missing. Open Settings → Privacy → Accessibility");
         return Err(AppError::Validation("accessibility_permission_required".to_string()));
     }
     if !crate::infrastructure::macos_api::permissions::send_command_v() {
-        println!("[WARN] Native Command+V dispatch failed");
+        crate::error!("Native Command+V dispatch failed");
         return Err(AppError::Internal("paste_keystroke_failed".to_string()));
     }
     Ok(())
