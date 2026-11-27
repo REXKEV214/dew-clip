@@ -494,10 +494,9 @@ p {
   left: 38px;
   top: 0;
   height: 100%;
-  width: 44px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 0.5px;
   pointer-events: none;
   font-size: 14px;
   font-weight: 500;
@@ -790,6 +789,23 @@ p {
   line-height: 16px;
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
+}
+
+.card-shortcut {
+  flex: none;
+  padding: 0 4px;
+  border: 1px solid var(--glass-line);
+  border-radius: 4px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 14px;
+}
+
+.card:hover .card-shortcut,
+.card.is-selected .card-shortcut {
+  color: var(--text-secondary);
 }
 
 .card-rule {
@@ -1086,8 +1102,7 @@ p {
   gap: 7px;
 }
 
-/* 常用语 / 图片与文件 and, when tags are in use, the tag filter: one block
-   that does not scroll, with the line under it. */
+/* Search, tabs and the tag filter stay above the scrolling favorites. */
 .favorite-toolbar {
   flex: none;
   display: flex;
@@ -1096,9 +1111,53 @@ p {
   border-bottom: 0.5px solid var(--glass-line);
 }
 
-/* Styled like the type tabs on the left. Without tags its line lands at the
-   same height as the left toolbar's, so the two sides read as one row:
-   header 46 + 9 + tab 27 = 82, the search box's bottom edge. */
+.favorite-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  margin: 9px var(--space-page) 0;
+  padding: 0 8px;
+  border-radius: var(--radius-control);
+  color: var(--text-secondary);
+  background: var(--glass-fill);
+  box-shadow: var(--glass-highlight), 0 0 0 0.5px var(--glass-line);
+}
+
+.favorite-search:focus-within {
+  background: var(--glass-fill-hover);
+  box-shadow: var(--glass-highlight), 0 0 0 0.5px var(--glass-line-strong);
+}
+
+.favorite-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  color: var(--text-primary);
+  background: transparent;
+  font-size: 13px;
+}
+
+.favorite-search input::placeholder {
+  color: var(--text-secondary);
+}
+
+.favorite-search button {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: var(--text-secondary);
+}
+
+.favorite-search button:hover {
+  background: var(--glass-fill-hover);
+}
+
 .favorite-tabs {
   flex: none;
   display: grid;
@@ -1170,6 +1229,11 @@ p {
   display: block;
 }
 
+.favorite-media.is-image .favorite-name {
+  display: block;
+  margin-top: 4px;
+}
+
 .favorite-image {
   display: block;
   max-width: 100%;
@@ -1194,6 +1258,10 @@ p {
 
 .favorite-item:hover {
   background: var(--glass-fill-hover);
+}
+
+.favorite-list.is-searching .favorite-item {
+  padding-left: 10px;
 }
 
 .favorite-item:active {

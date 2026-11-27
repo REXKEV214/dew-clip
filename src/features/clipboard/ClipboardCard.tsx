@@ -3,7 +3,8 @@ import type { MouseEvent } from "react";
 import { ArrowUpToLine, Check, FileText, ImageOff, Pencil, Play, Trash2 } from "lucide-react";
 import type { ClipboardEntry, Translate } from "../../shared/types";
 import { isEditableEntry, isTextEntry } from "../../shared/lib/clipboardTypes";
-import { hasMatch, splitMatches, type TextPart } from "./searchHighlight";
+import { fileName, findMatchedFilePath, hasMatch, splitMatches, type TextPart } from "./searchHighlight";
+import { HighlightedParts } from "./HighlightedParts";
 import { formatAge } from "../../shared/lib/formatAge";
 import { getSourceAppIcon, peekSourceAppIcon } from "../../shared/lib/sourceAppIcon";
 import { getFileIcon, peekFileIcon } from "../../shared/lib/fileIcon";
@@ -19,6 +20,7 @@ interface ClipboardCardProps {
   /** 批量粘贴: a tick circle replaces the actions and clicks select. */
   batchMode: boolean;
   batchChecked: boolean;
+  shortcutNumber?: number;
   onPaste: (item: ClipboardEntry) => void;
   onToggleBatch: (item: ClipboardEntry) => void;
   onContextMenu: (item: ClipboardEntry) => void;
@@ -139,40 +141,44 @@ const ImagePreview = ({ item, t }: { item: ClipboardEntry; t: Translate }) => {
   );
 };
 
-const fileName = (path: string) => path.split(/[\\/]/).pop() || path;
+type FileMatch = ReturnType<typeof findMatchedFilePath>;
 
-const VideoPreview = ({ item }: { item: ClipboardEntry }) => {
-  const cover = useVideoThumbnail(item.content, item.timestamp);
+const FileName = ({ path, parts }: FileMatch) => {
+  const name = fileName(path);
+  return <span className="card-file-name" title={name}>{parts ? <HighlightedParts parts={parts} /> : name}</span>;
+};
+
+const VideoPreview = ({ file, timestamp }: { file: FileMatch; timestamp: number }) => {
+  const cover = useVideoThumbnail(file.path, timestamp);
   return (
     <div className="card-file">
       <div className="card-video-cover">
         {cover && <img src={cover} alt="" draggable={false} />}
         <Play size={14} />
       </div>
-      <span className="card-file-name">{fileName(item.content)}</span>
+      <FileName {...file} />
     </div>
   );
 };
 
-const FilePreview = ({ item, t }: { item: ClipboardEntry; t: Translate }) => {
-  const paths = item.content.split("\n").filter(Boolean);
-  const first = paths[0] ?? "";
-  const [icon, setIcon] = useState(() => peekFileIcon(first) ?? null);
+const FilePreview = ({ file, count, t }: { file: FileMatch; count: number; t: Translate }) => {
+  const { path } = file;
+  const [icon, setIcon] = useState(() => peekFileIcon(path) ?? null);
   useEffect(() => {
     let alive = true;
-    void getFileIcon(first).then((loaded) => {
+    void getFileIcon(path).then((loaded) => {
       if (alive) setIcon(loaded);
     });
     return () => {
       alive = false;
     };
-  }, [first]);
+  }, [path]);
   return (
     <div className="card-file">
       {icon ? <img className="card-file-icon" src={icon} alt="" draggable={false} /> : <FileText size={26} />}
-      <span className="card-file-name">{fileName(first)}</span>
-      {paths.length > 1 && (
-        <span className="card-file-more">{t("more_files").replace("{count}", String(paths.length - 1))}</span>
+      <FileName {...file} />
+      {count > 1 && (
+        <span className="card-file-more">{t("more_files").replace("{count}", String(count - 1))}</span>
       )}
     </div>
   );
@@ -225,15 +231,7 @@ const HighlightedText = ({ match, isCode }: { match: TextMatch; isCode: boolean 
 
   return (
     <div ref={boxRef} className={`card-text is-searched${isCode ? " is-code" : ""}`}>
-      {match.parts.map((part, index) =>
-        part.match ? (
-          <mark key={index} className="search-hit">
-            {part.text}
-          </mark>
-        ) : (
-          part.text
-        )
-      )}
+      <HighlightedParts parts={match.parts} />
     </div>
   );
 };
@@ -242,10 +240,6 @@ const CardBody = ({ item, t, match }: { item: ClipboardEntry; t: Translate; matc
   switch (item.content_type) {
     case "image":
       return <ImagePreview item={item} t={t} />;
-    case "video":
-      return <VideoPreview item={item} />;
-    case "file":
-      return <FilePreview item={item} t={t} />;
     default:
       if (match) return <HighlightedText match={match} isCode={item.content_type === "code"} />;
       return (
@@ -262,6 +256,7 @@ const ClipboardCard = ({
   selected,
   batchMode,
   batchChecked,
+  shortcutNumber,
   onPaste,
   onToggleBatch,
   onContextMenu,
@@ -274,8 +269,20 @@ const ClipboardCard = ({
 }: ClipboardCardProps) => {
   const now = useNow();
   const match = useMemo(() => findTextMatch(item, searchTerm), [item, searchTerm]);
+  const paths = useMemo(
+    () => item.content_type === "file" || item.content_type === "video"
+      ? item.content.split("\n").filter((path) => path.trim())
+      : null,
+    [item.content, item.content_type]
+  );
+  const file = useMemo(() => paths && findMatchedFilePath(paths, searchTerm), [paths, searchTerm]);
   // Images found by the text in them get the rim too, without any lit words.
-  const searchHit = match !== null || (searchTerm.trim() !== "" && item.ocr_match === true);
+  const searchHit = Boolean(match || file?.parts) || (searchTerm.trim() !== "" && item.ocr_match === true);
+  const body = file && paths
+    ? item.content_type === "video"
+      ? <VideoPreview file={file} timestamp={item.timestamp} />
+      : <FilePreview key={file.path} file={file} count={paths.length} t={t} />
+    : <CardBody item={item} t={t} match={match} />;
 
   const action = (handler: (entry: ClipboardEntry) => void) => (event: MouseEvent) => {
     event.stopPropagation();
@@ -349,9 +356,12 @@ const ClipboardCard = ({
             </span>
           )}
           <time className="card-time">{formatAge(item.created_at || item.timestamp, now)}</time>
+          {shortcutNumber !== undefined && (
+            <kbd className="card-shortcut" aria-hidden="true">⌘{shortcutNumber}</kbd>
+          )}
         </div>
         <div className="card-rule" />
-        <CardBody item={item} t={t} match={match} />
+        {body}
       </div>
       {batchMode && (
         <span className={`card-check${batchChecked ? " is-on" : ""}`} aria-hidden="true">

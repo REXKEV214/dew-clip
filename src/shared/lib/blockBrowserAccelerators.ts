@@ -14,6 +14,9 @@ export type BrowserAcceleratorBlockerOptions = {
 };
 
 const isMod = (event: KeyboardEvent) => event.ctrlKey || event.metaKey;
+const suppressedFindEvents = new WeakSet<KeyboardEvent>();
+
+export const isBrowserFindSuppressed = (event: KeyboardEvent) => suppressedFindEvents.has(event);
 
 const isFindShortcut = (event: KeyboardEvent) => {
   const key = event.key.toLowerCase();
@@ -72,10 +75,12 @@ export const installBrowserAcceleratorBlocker = (
     (typeof import.meta !== "undefined" && Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV));
 
   const onKeyDown = (event: KeyboardEvent) => {
+    if (event.isComposing || event.key === "Process") return;
     if (!isBrowserAcceleratorShortcut(event, { allowDevReload })) return;
 
     // Find shortcuts: suppress browser UI but allow app listeners (e.g. focus the search box).
     if (isFindShortcut(event)) {
+      suppressedFindEvents.add(event);
       options.onFind?.();
       event.preventDefault();
       return;

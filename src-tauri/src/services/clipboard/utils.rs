@@ -1082,6 +1082,16 @@ pub fn build_entry_preview(
     }
 }
 
+pub(crate) fn file_names_match(content: &str, needle_lower: &str) -> bool {
+    !needle_lower.is_empty()
+        && content.lines().any(|path| {
+            path.trim()
+                .rsplit(['/', '\\'])
+                .find(|part| !part.is_empty())
+                .is_some_and(|name| name.to_lowercase().contains(needle_lower))
+        })
+}
+
 pub fn entry_matches_search(
     entry: &ClipboardEntry,
     term: &str,
@@ -1130,6 +1140,10 @@ pub fn entry_matches_search(
 
     if entry.note.to_lowercase().contains(&term) {
         return true;
+    }
+
+    if matches!(entry.content_type.as_str(), "file" | "video") {
+        return file_names_match(&entry.content, &term);
     }
 
     is_text_type(&entry.content_type)
@@ -1669,6 +1683,27 @@ mod tests {
 
         assert!(!entry_matches_search(&entry, "screenshot", false, false));
         assert!(!entry_matches_search(&entry, "test", false, false));
+    }
+
+    #[test]
+    fn session_search_matches_file_names_and_skips_parent_paths() {
+        let single = sample_entry("file", "/parent-only/REPORT.PDF", "");
+        let multiple = sample_entry(
+            "file",
+            "/parent-only/first.txt\n\n C:\\parent-only\\报告[Final].pdf \r\n",
+            "",
+        );
+        let video = sample_entry("video", "/parent-only/报告.MOV", "");
+        assert!(entry_matches_search(&single, "report.pdf", false, false));
+        assert!(entry_matches_search(&multiple, "first.txt", false, false));
+        assert!(entry_matches_search(&multiple, " 报告[final] ", false, false));
+        assert!(entry_matches_search(&video, "报告.mov", false, false));
+        for entry in [&single, &multiple, &video] {
+            assert!(!entry_matches_search(entry, "parent-only", false, false));
+        }
+        assert!(!entry_matches_search(&multiple, "first.txt\n报告", false, false));
+        assert!(!entry_matches_search(&multiple, "报告", false, true));
+        assert!(!entry_matches_search(&video, "报告", true, false));
     }
 
     #[test]

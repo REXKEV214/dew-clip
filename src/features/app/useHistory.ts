@@ -11,10 +11,7 @@ const SEARCH_LIMIT = 300;
 /** A page whose offset went stale while loading is asked for again, this often at most. */
 const MAX_PAGE_ATTEMPTS = 3;
 
-/**
- * The list on screen. `search` is what was submitted (Search button / Return),
- * not what is being typed: the list doesn't move while typing.
- */
+/** The list on screen follows the applied search term and type filter. */
 export const useHistory = (search: string, typeFilter: TypeFilter | null, ready: boolean) => {
   const [list, setList] = useState<ClipboardEntry[]>([]);
   // Mirrors `list` synchronously: its length is the offset of the next page.

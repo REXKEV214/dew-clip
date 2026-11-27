@@ -238,7 +238,7 @@ pub fn clipboard_image_fallback_data_url() -> Option<String> {
 }
 
 pub use pipeline::{ClipboardData, ClipboardPipeline, PipelineContext};
-pub(crate) use utils::truncate_entry_for_ui;
+pub(crate) use utils::{file_names_match, truncate_entry_for_ui};
 pub use utils::{
     app_likely_word_processor, attach_rich_image_fallback, attach_rich_named_formats,
     build_clipboard_text_fingerprint, build_entry_preview, build_exact_paste_html,
