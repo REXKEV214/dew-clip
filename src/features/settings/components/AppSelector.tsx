@@ -10,9 +10,7 @@ interface AppSelectorProps {
     type: string | null;
     installedApps: InstalledAppOption[];
     onSelect: (val: string) => void;
-    theme: string;
     t: (key: string) => string;
-    colorMode: string;
     mode?: "default-app" | "pick-app";
     excludePaths?: string[];
 }

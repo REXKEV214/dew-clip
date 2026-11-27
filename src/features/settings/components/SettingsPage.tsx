@@ -22,6 +22,7 @@ import { formatError } from "../../../shared/lib/errorMessage";
 import { requestMacAccessibility } from "../../../shared/lib/macAccessibility";
 import { GITHUB_URL } from "../../../shared/config";
 import { ACCENTS, ACCENT_NAMES, ACCENT_SETTING_KEY, normalizeAccent } from "../../../shared/lib/accent";
+import { APPEARANCE_SETTING_KEY, normalizeAppearance } from "../../../shared/lib/appearance";
 
 const APP_TYPES = ["text", "rich_text", "image", "video", "code", "url"] as const;
 const GLASS_SAVE_THROTTLE_MS = 100;
@@ -294,6 +295,17 @@ const SettingsPage = ({
       </Section>
 
       <Section title={t("section_interface")} open={!!openSections.interface} onToggle={() => toggleSection("interface")}>
+        <Row label={t("appearance")} column>
+          <Segmented
+            value={normalizeAppearance(values[APPEARANCE_SETTING_KEY])}
+            options={[
+              { value: "system", label: t("appearance_system") },
+              { value: "light", label: t("appearance_light") },
+              { value: "dark", label: t("appearance_dark") },
+            ]}
+            onChange={(value) => save(APPEARANCE_SETTING_KEY, value)}
+          />
+        </Row>
         <Row label={t("accent_color")} column>
           <div className="accent-swatches" role="radiogroup" aria-label={t("accent_color")}>
             {ACCENT_NAMES.map((name) => (
@@ -508,8 +520,6 @@ const SettingsPage = ({
         installedApps={installedApps}
         mode={pickingIgnoredApp ? "pick-app" : "default-app"}
         excludePaths={pickingIgnoredApp ? ignoredApps.excludePaths : undefined}
-        theme=""
-        colorMode="light"
         t={t}
         onClose={() => setAppSelector(null)}
         onSave={(type, path) => {

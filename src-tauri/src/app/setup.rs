@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::{App, AppHandle, Manager};
 
+use crate::app::appearance::{self, AppearancePreference};
 use crate::app::window_manager::{maybe_open_devtools, toggle_window};
 use crate::app_state::{AppDataDir, EncryptionQueueState, PasteQueue, SessionHistory, SettingsState};
 use crate::database::{self, DbState};
@@ -160,7 +161,8 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     apply_initial_dock_visibility(app, &settings);
 
     // 7. Window Initialization (Pinned/Focus)
-    setup_main_window(app, &settings);
+    appearance::init(&app_handle, settings.appearance);
+    setup_main_window(app, &settings)?;
     crate::app::capsule::create_window(&app_handle);
 
     // 8. Background Services & Monitors
@@ -271,6 +273,7 @@ pub struct StartupSettings {
     pub window_pin_mode: WindowPinMode,
     /// No window has been shown yet: a new user, or settings just restored.
     pub first_open: bool,
+    pub appearance: AppearancePreference,
     pub glass_level: u64,
     pub capsule_enabled: bool,
     pub capsule_style: String,
@@ -318,6 +321,7 @@ pub(crate) fn load_settings(repo: &SqliteSettingsRepository) -> rusqlite::Result
         ))
         .to_string(),
         window_pin_mode: WindowPinMode::from_setting(&get(PIN_MODE_KEY, "always_on_top")),
+        appearance: AppearancePreference::from_setting(&get(appearance::SETTING_KEY, "system")),
         glass_level: get("app.glass_level", "35")
             .parse::<u64>()
             .map(|v| v.min(100))
@@ -379,6 +383,7 @@ pub(crate) fn settings_state_from(s: &StartupSettings) -> SettingsState {
         main_hotkey: std::sync::Mutex::new(s.main_hotkey.clone()),
         window_position_mode: std::sync::Mutex::new(s.window_position_mode.clone()),
         window_pin_mode: std::sync::Mutex::new(s.window_pin_mode),
+        appearance: std::sync::Mutex::new(s.appearance),
         glass_level: AtomicU64::new(s.glass_level),
         capsule_enabled: AtomicBool::new(s.capsule_enabled),
         capsule_style: std::sync::Mutex::new(s.capsule_style.clone()),
@@ -408,22 +413,23 @@ fn set_window_all_spaces(window: &tauri::WebviewWindow) {
 
 
 
-fn setup_main_window(app: &App, s: &StartupSettings) {
+fn setup_main_window(app: &App, s: &StartupSettings) -> Result<(), Box<dyn std::error::Error>> {
     let effective_pinned = s.window_pinned;
     WINDOW_PINNED.store(effective_pinned, Ordering::Relaxed);
 
-    if let Some(window) = app.get_webview_window("main") {
-        if let (Some(w), Some(h)) = (s.window_width, s.window_height) {
-            if w >= 300.0 && h >= 300.0 {
-                let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                    width: w,
-                    height: h,
-                }));
-            }
+    let config = app.config().app.windows.iter().find(|window| window.label == "main")
+        .expect("Missing main window configuration");
+    let window = tauri::WebviewWindowBuilder::from_config(app, config)?.build()?;
+    if let (Some(w), Some(h)) = (s.window_width, s.window_height) {
+        if w >= 300.0 && h >= 300.0 {
+            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                width: w,
+                height: h,
+            }));
         }
-        // Space flags before panel conversion.
-        set_window_all_spaces(&window);
     }
+    // Space flags before panel conversion.
+    set_window_all_spaces(&window);
 
     // Handle silent start
     let args: Vec<String> = std::env::args().collect();
@@ -431,21 +437,10 @@ fn setup_main_window(app: &App, s: &StartupSettings) {
         args.contains(&"--autostart".to_string()) || args.contains(&"--minimized".to_string());
     let should_show_main = !is_autostart && !s.silent_start;
 
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-
-    if !should_show_main {
-        // The main window is created visible (tauri.conf.json), so autostart
-        // and silent start must hide it before the panel conversion.
-        let _ = window.hide();
-    }
-
-    // Convert AFTER final show/hide work — to_panel drops tao ivars.
     if let Err(err) = crate::infrastructure::macos_api::window::setup_clipboard_panel(&window) {
         eprintln!("[macos-overlay] setup_clipboard_panel failed: {err}");
     }
-    crate::app::window_manager::apply_window_vibrancy(&app.handle().clone(), &window);
+    crate::app::window_manager::apply_window_vibrancy(app.handle(), &window);
 
     if should_show_main {
         if s.first_open {
@@ -454,9 +449,14 @@ fn setup_main_window(app: &App, s: &StartupSettings) {
             crate::app::window_manager::position_window_for_show(&app.handle().clone(), &window);
         }
         crate::infrastructure::macos_api::window::configure_overlay_space_behavior(&window);
-        let _ = crate::infrastructure::macos_api::window::show_clipboard_panel(&app.handle().clone());
+        if !panel::show_clipboard_panel(app.handle()) {
+            appearance::refresh_system_theme(app.handle());
+            window.show()?;
+            let _ = window.set_focus();
+        }
         maybe_open_devtools(&window);
     }
+    Ok(())
 }
 
 /// New installs launch at login. Runs once, on the first start of a fresh

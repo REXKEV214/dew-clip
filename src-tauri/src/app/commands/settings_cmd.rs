@@ -1,3 +1,4 @@
+use crate::app::appearance::{self, AppearancePreference};
 use crate::app::commands::hotkey_cmd::sync_registered_hotkeys;
 use crate::app_state::SettingsState;
 use crate::database::DbState;
@@ -35,6 +36,7 @@ pub fn save_setting(
         return Ok(());
     }
     match key.as_str() {
+        appearance::SETTING_KEY => return appearance::set_appearance(app_handle, AppearancePreference::from_setting(&value)),
         "app.hotkey" => return super::hotkey_cmd::register_hotkey(app_handle, value),
         "app.sequential_hotkey" => return super::hotkey_cmd::set_sequential_hotkey(app_handle, value),
         "app.persistent" => {
@@ -260,6 +262,7 @@ pub fn reset_settings(
     // Running state follows the defaults now, not after the next start.
     let fresh = crate::app::setup::load_settings(&state.settings_repo)?;
     settings_state.take_values_from(crate::app::setup::settings_state_from(&fresh));
+    appearance::reapply(&app)?;
     crate::app::tray::refresh_tray(&app);
     panel::refresh_clipboard_panel_policy(&app)
         .map_err(|error| AppError::Internal(error.to_string()))?;

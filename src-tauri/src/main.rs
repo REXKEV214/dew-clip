@@ -76,6 +76,7 @@ fn main() -> AppResult<()> {
             app::window_manager::focus_clipboard_window,
             app::window_manager::set_glass_level,
             app::window_manager::supports_liquid_glass,
+            app::appearance::get_appearance_state,
             app::window_manager::set_side_panel,
             app::window_manager::begin_fixed_position_setup,
             app::window_manager::save_fixed_window_position,

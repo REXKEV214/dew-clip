@@ -1,5 +1,6 @@
 import { translations, type TranslationKey } from "../locales";
 import { getHotkeyDisplayTokens } from "../shared/lib/hotkeyDisplay";
+import type { EffectiveTheme } from "../shared/lib/appearance";
 
 export type CapsuleLocale = "zh" | "en";
 
@@ -20,6 +21,7 @@ export interface CapsulePayload {
   fileCount: number;
   sequential?: SequentialNotice | null;
   style: "glass" | "island" | "black";
+  theme: EffectiveTheme;
   language: string;
   count: number;
   fresh: boolean;

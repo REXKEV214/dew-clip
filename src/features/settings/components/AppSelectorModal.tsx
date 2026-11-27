@@ -9,8 +9,6 @@ import { canonicalizeAppPaths } from "../utils/ignoredApps";
 interface AppSelectorModalProps {
     show: string | null;
     installedApps: InstalledAppOption[];
-    theme: string;
-    colorMode: string;
     t: (key: string) => string;
     onClose: () => void;
     onSave: (type: string, val: string) => void;
@@ -20,11 +18,10 @@ interface AppSelectorModalProps {
     excludePaths?: string[];
 }
 
-const AppSelectorModal = ({ show, installedApps, theme, colorMode, t, onClose, onSave, resetLabel, mode, excludePaths }: AppSelectorModalProps) => (
+const AppSelectorModal = ({ show, installedApps, t, onClose, onSave, resetLabel, mode, excludePaths }: AppSelectorModalProps) => (
     <AppModal
         open={Boolean(show)}
         onClose={onClose}
-        theme={theme}
         overlayClassName="modal-overlay-app-selector"
         panelClassName="modal-panel glass-popover modal-panel-app-selector"
         ariaLabel={t("select_app_title")}
@@ -43,8 +40,6 @@ const AppSelectorModal = ({ show, installedApps, theme, colorMode, t, onClose, o
                 installedApps={installedApps}
                 mode={mode}
                 excludePaths={excludePaths}
-                theme={theme}
-                colorMode={colorMode}
                 onSelect={(val) => {
                     if (show) onSave(show, val);
                     onClose();

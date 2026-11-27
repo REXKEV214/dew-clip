@@ -52,6 +52,7 @@ import { showNativeMenu, type NativeMenuItem } from "./shared/lib/nativeMenu";
 import { isTauriRuntime } from "./shared/lib/tauriRuntime";
 import { getHotkeyDisplayTokens } from "./shared/lib/hotkeyDisplay";
 import { formatError } from "./shared/lib/errorMessage";
+import { mirrorAppearance } from "./shared/lib/appearance";
 import type { ClipboardEntry, SidePanelKind, WindowPinMode } from "./shared/types";
 
 /** How much the CSS tint shows on systems with frosted glass only. */
@@ -624,7 +625,10 @@ const App = () => {
       onConfirm: () => {
         closeConfirm();
         invoke("reset_settings")
-          .then(() => window.location.reload())
+          .then(() => {
+            mirrorAppearance("system");
+            window.location.reload();
+          })
           .catch((error) => pushToast(t("reset_failed") + String(error), 3000));
       },
     });

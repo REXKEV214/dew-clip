@@ -216,6 +216,10 @@ const zh = {
   // Settings: sections
   section_common: "常用设置",
   section_interface: "个性化界面",
+  appearance: "外观",
+  appearance_system: "跟随系统",
+  appearance_light: "浅色",
+  appearance_dark: "深色",
   accent_color: "主题色",
   accent_blue: "蓝色",
   accent_green: "绿色",
@@ -651,6 +655,10 @@ const en: Record<TranslationKey, string> = {
 
   section_common: "General",
   section_interface: "Personalization",
+  appearance: "Appearance",
+  appearance_system: "System",
+  appearance_light: "Light",
+  appearance_dark: "Dark",
   accent_color: "Theme Color",
   accent_blue: "Blue",
   accent_green: "Green",

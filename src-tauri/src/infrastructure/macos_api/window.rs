@@ -370,7 +370,7 @@ pub fn show_clipboard_panel(app: &AppHandle) -> bool {
             }
 
             if let Ok(panel) = app_for_panel.get_webview_panel("main") {
-                // Attached once; a no-op unless it hasn't been yet.
+                crate::app::appearance::refresh_system_theme(&app_for_panel);
                 if let Some(window) = app_for_panel.get_webview_window("main") {
                     crate::app::window_manager::apply_window_vibrancy(&app_for_panel, &window);
                 }
