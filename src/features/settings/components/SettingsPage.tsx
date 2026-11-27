@@ -9,12 +9,14 @@ import { FaviconGithub } from "./FaviconGithub";
 import appLogo from "../../../assets/logo.png";
 import AppSelectorModal from "./AppSelectorModal";
 import TranslationSettings from "./groups/TranslationSettings";
+import { IgnoredApps } from "./groups/IgnoredApps";
+import { StorageSettings } from "./groups/StorageSettings";
 import { HotkeyField, Row, Section, Segmented, Toggle } from "./controls";
 import { chosenApp, unchosenFallback } from "../utils/defaultApps";
-import type { InstalledAppOption } from "../types";
+import type { AppCleanupPolicy, InstalledAppOption } from "../types";
 import type { SettingsStore } from "../../app/useSettings";
 import type { TranslationConfig } from "../../translate/config";
-import type { Locale, WindowPinMode } from "../../../shared/types";
+import type { ConfirmDialogState, Locale, WindowPinMode } from "../../../shared/types";
 import { withNativeDialog } from "../../../shared/lib/focus";
 import { formatError } from "../../../shared/lib/errorMessage";
 import { requestMacAccessibility } from "../../../shared/lib/macAccessibility";
@@ -22,8 +24,6 @@ import { GITHUB_URL } from "../../../shared/config";
 import { ACCENTS, ACCENT_NAMES, ACCENT_SETTING_KEY, normalizeAccent } from "../../../shared/lib/accent";
 
 const APP_TYPES = ["text", "rich_text", "image", "video", "code", "url"] as const;
-const PERSISTENT_LIMIT_MIN = 50;
-const PERSISTENT_LIMIT_MAX = 99999;
 const GLASS_SAVE_THROTTLE_MS = 100;
 // 复制提示弹窗停留时间 (ms); the default is the slider's middle. Matches capsule.rs.
 const CAPSULE_DURATION_MIN = 1000;
@@ -35,6 +35,14 @@ const appDisplayName = (path: string) => (path.split(/[/\\]/).pop() || path).rep
 
 interface SettingsPageProps {
   settings: SettingsStore;
+  ignoredApps: {
+    ignored: AppCleanupPolicy[];
+    excludePaths: string[];
+    add: (name: string, path: string) => void;
+    remove: (policy: AppCleanupPolicy) => void;
+  };
+  openConfirm: (options: Omit<ConfirmDialogState, "show">) => void;
+  closeConfirm: () => void;
   pinMode: WindowPinMode;
   onSelectPinMode: (mode: WindowPinMode) => void;
   translationConfig: TranslationConfig | null;
@@ -48,6 +56,9 @@ interface SettingsPageProps {
 
 const SettingsPage = ({
   settings,
+  ignoredApps,
+  openConfirm,
+  closeConfirm,
   pinMode,
   onSelectPinMode,
   translationConfig,
@@ -68,8 +79,6 @@ const SettingsPage = ({
   const [defaultApps, setDefaultApps] = useState<Record<string, string>>({});
   const [appSelector, setAppSelector] = useState<string | null>(null);
   const [hasFixedPosition, setHasFixedPosition] = useState(false);
-
-  const [limitDraft, setLimitDraft] = useState(values["app.persistent_limit"] ?? "1000");
 
   useEffect(() => {
     invoke<boolean>("is_autostart_enabled").then(setAutostart).catch(console.error);
@@ -129,18 +138,6 @@ const SettingsPage = ({
     if (mode === "fixed" && !hasFixedPosition) onSetFixedPosition();
   };
 
-  const commitLimit = () => {
-    const parsed = parseInt(limitDraft, 10);
-    const previous = values["app.persistent_limit"] ?? "1000";
-    if (!Number.isFinite(parsed)) {
-      setLimitDraft(previous);
-      return;
-    }
-    const clamped = String(Math.min(PERSISTENT_LIMIT_MAX, Math.max(PERSISTENT_LIMIT_MIN, parsed)));
-    setLimitDraft(clamped);
-    save("app.persistent_limit", clamped);
-  };
-
   // Each change rebuilds the native glass, so a drag is throttled.
   const glassLevel = Number(values["app.glass_level"] ?? 35);
   const glassTimer = useRef<number | null>(null);
@@ -198,10 +195,12 @@ const SettingsPage = ({
     if (unchosenFallback(values, type) === "text") {
       return `${t("same_as_text_app")} (${appName(chosenApp(values, "text"))})`;
     }
-    return defaultApps[type] ? `${t("system_default")} (${appDisplayName(defaultApps[type])})` : t("not_configured");
+    return defaultApps[type] ? `${t("system_default")} (${defaultApps[type]})` : t("system_default");
   };
 
   const positionMode = values["app.window_position_mode"] ?? "follow_mouse";
+  const downloadRemoteImages = flag("app.download_remote_images", true);
+  const pickingIgnoredApp = appSelector === "ignored";
 
   return (
     <div className="settings-page">
@@ -384,36 +383,6 @@ const SettingsPage = ({
       </Section>
 
       <Section title={t("section_paste")} open={!!openSections.paste} onToggle={() => toggleSection("paste")}>
-        <Row label={t("persistent_storage")} hint={t("persistent_hint")}>
-          <Toggle
-            label={t("persistent_storage")}
-            checked={flag("app.persistent", true)}
-            onChange={(enabled) => applyToggle("app.persistent", enabled, "set_persistence", { enabled })}
-          />
-        </Row>
-        {flag("app.persistent", true) && (
-          <Row label={t("persistent_limit_enabled")} hint={t("persistent_limit_enabled_hint")}>
-            <Toggle
-              label={t("persistent_limit_enabled")}
-              checked={flag("app.persistent_limit_enabled")}
-              onChange={(enabled) => save("app.persistent_limit_enabled", String(enabled))}
-            />
-          </Row>
-        )}
-        {flag("app.persistent", true) && flag("app.persistent_limit_enabled") && (
-          <Row label={t("persistent_limit")} hint={t("persistent_limit_hint")} child>
-            <input
-              className="glass-field is-number"
-              inputMode="numeric"
-              value={limitDraft}
-              onChange={(event) => setLimitDraft(event.target.value.replace(/\D/g, ""))}
-              onBlur={commitLimit}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") event.currentTarget.blur();
-              }}
-            />
-          </Row>
-        )}
         <Row label={t("delete_after_paste")} hint={t("delete_after_paste_hint")}>
           <Toggle
             label={t("delete_after_paste")}
@@ -440,7 +409,35 @@ const SettingsPage = ({
         )}
       </Section>
 
+      <Section title={t("section_privacy")} open={!!openSections.privacy} onToggle={() => toggleSection("privacy")}>
+        <IgnoredApps t={t} apps={ignoredApps.ignored} onAdd={() => setAppSelector("ignored")} onRemove={ignoredApps.remove} />
+        <Row label={t("download_remote_images")} hint={t("download_remote_images_hint")}>
+          <Toggle
+            label={t("download_remote_images")}
+            checked={downloadRemoteImages}
+            onChange={(enabled) => save("app.download_remote_images", String(enabled))}
+          />
+        </Row>
+        {downloadRemoteImages && (
+          <Row label={t("remote_image_max_mb")} hint={t("remote_image_max_mb_hint")} child column>
+            <Segmented
+              value={values["app.remote_image_max_mb"] ?? "8"}
+              options={["2", "4", "8", "16"].map((value) => ({ value, label: t("megabytes").replace("{count}", value) }))}
+              onChange={(value) => save("app.remote_image_max_mb", value)}
+            />
+          </Row>
+        )}
+      </Section>
+
       <Section title={t("section_data")} open={!!openSections.data} onToggle={() => toggleSection("data")}>
+        <Row label={t("persistent_storage")} hint={t("persistent_hint")}>
+          <Toggle
+            label={t("persistent_storage")}
+            checked={flag("app.persistent", true)}
+            onChange={(enabled) => applyToggle("app.persistent", enabled, "set_persistence", { enabled })}
+          />
+        </Row>
+        <StorageSettings settings={settings} pushToast={pushToast} openConfirm={openConfirm} closeConfirm={closeConfirm} />
         <Row label={t("data_path")} column>
           <code className="path-text">{dataPath}</code>
           <div className="inline-actions">
@@ -498,13 +495,22 @@ const SettingsPage = ({
       <AppSelectorModal
         show={appSelector}
         installedApps={installedApps}
+        mode={pickingIgnoredApp ? "pick-app" : "default-app"}
+        excludePaths={pickingIgnoredApp ? ignoredApps.excludePaths : undefined}
         theme=""
         colorMode="light"
         t={t}
         onClose={() => setAppSelector(null)}
-        onSave={(type, path) => save(`app.${type}`, path)}
+        onSave={(type, path) => {
+          if (type === "ignored") {
+            const name = installedApps.find((app) => app.value === path)?.label ?? appDisplayName(path);
+            ignoredApps.add(name, path);
+          } else {
+            save(`app.${type}`, path);
+          }
+        }}
         resetLabel={
-          appSelector && chosenApp(values, appSelector)
+          appSelector && !pickingIgnoredApp && chosenApp(values, appSelector)
             ? t(unchosenFallback(values, appSelector) === "text" ? "same_as_text_app" : "system_default")
             : undefined
         }

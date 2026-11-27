@@ -4,8 +4,10 @@ use base64::{engine::general_purpose, Engine as _};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use urlencoding::decode;
 
@@ -19,8 +21,8 @@ pub const RICH_IMAGE_FALLBACK_PREFIX: &str = "<!--DEWCLIP_RICH_IMAGE:";
 pub const RICH_IMAGE_FALLBACK_SUFFIX: &str = "-->";
 pub const RICH_NAMED_FORMATS_PREFIX: &str = "<!--DEWCLIP_RICH_FORMATS:";
 pub const RICH_NAMED_FORMATS_SUFFIX: &str = "-->";
-const REMOTE_IMAGE_MAX_BYTES: usize = 8 * 1024 * 1024;
 const REMOTE_IMAGE_TIMEOUT_SECS: u64 = 4;
+const REMOTE_IMAGE_REDIRECTS: usize = 8;
 
 #[derive(Serialize, Deserialize)]
 struct StoredNamedClipboardFormat {
@@ -61,51 +63,232 @@ fn image_mime_by_ext(ext: &str) -> &'static str {
     }
 }
 
-fn normalize_remote_img_url(src: &str) -> Option<String> {
-    let trimmed = src.trim();
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        return Some(trimmed.to_string());
+fn normalize_remote_img_url(src: &str) -> Option<reqwest::Url> {
+    if src.chars().any(char::is_control) {
+        return None;
     }
-    if trimmed.starts_with("//") {
-        return Some(format!("https:{}", trimmed));
+    let trimmed = src.trim();
+    let url = if trimmed.starts_with("//") {
+        reqwest::Url::parse(&format!("https:{trimmed}")).ok()?
+    } else if trimmed.get(..8).is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://")) {
+        reqwest::Url::parse(trimmed).ok()?
+    } else {
+        return None;
+    };
+    valid_remote_url(&url).then_some(url)
+}
+
+fn valid_remote_url(url: &reqwest::Url) -> bool {
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    url.host_str().is_some_and(|host| {
+        let host = host.trim_end_matches('.');
+        !host.is_empty()
+            && host != "localhost"
+            && ![".localhost", ".local", ".internal"].iter().any(|suffix| host.ends_with(suffix))
+    })
+}
+
+fn is_forbidden_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [first, second, third, _] = ip.octets();
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_documentation()
+                || first == 0
+                || first >= 224
+                || (first == 100 && (64..128).contains(&second))
+                || matches!((first, second, third), (192, 0, 0) | (192, 88, 99))
+        }
+        IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_forbidden_ip(mapped.into());
+            }
+            let [first, second, ..] = ip.segments();
+            // Public unicast only, excluding special-purpose, transition and documentation blocks.
+            first & 0xe000 != 0x2000
+                || (first == 0x2001 && (second < 0x0200 || second == 0x0db8))
+                || first == 0x2002
+                || (first == 0x3fff && second < 0x1000)
+        }
+    }
+}
+
+fn validate_remote_url_and_resolve(url: &reqwest::Url) -> Option<ValidatedImageAddresses> {
+    if !valid_remote_url(url) {
+        return None;
+    }
+    let host = url.host_str()?;
+    let port = url.port_or_known_default()?;
+    let addresses = if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
+        vec![SocketAddr::new(ip, port)]
+    } else {
+        (host, port).to_socket_addrs().ok()?.collect()
+    };
+    ValidatedImageAddresses::new(addresses)
+}
+
+fn remote_image_redirect(url: &reqwest::Url, location: &str) -> Option<reqwest::Url> {
+    if location.chars().any(char::is_control) {
+        return None;
+    }
+    let next = url.join(location).ok()?;
+    valid_remote_url(&next).then_some(next)
+}
+
+struct ValidatedImageAddresses(Vec<SocketAddr>);
+
+impl ValidatedImageAddresses {
+    fn new(addresses: Vec<SocketAddr>) -> Option<Self> {
+        (!addresses.is_empty() && !addresses.iter().any(|addr| is_forbidden_ip(addr.ip())))
+            .then_some(Self(addresses))
+    }
+}
+
+impl reqwest::dns::Resolve for ValidatedImageAddresses {
+    fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let addresses: reqwest::dns::Addrs = Box::new(self.0.clone().into_iter());
+        Box::pin(async move { Ok(addresses) })
+    }
+}
+
+fn fetch_remote_image(
+    mut url: reqwest::Url,
+    max_bytes: usize,
+    enabled: &AtomicBool,
+) -> Option<(Vec<u8>, &'static str)> {
+    for hop in 0..=REMOTE_IMAGE_REDIRECTS {
+        if !enabled.load(Ordering::Relaxed) {
+            return None;
+        }
+        let addresses = validate_remote_url_and_resolve(&url)?;
+        // Pin this hop to the checked DNS answers. A forwarding proxy would resolve it again.
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(REMOTE_IMAGE_TIMEOUT_SECS))
+            .redirect(reqwest::redirect::Policy::none())
+            .dns_resolver(Arc::new(addresses))
+            .build()
+            .ok()?;
+        if !enabled.load(Ordering::Relaxed) {
+            return None;
+        }
+        let response = client.get(url.clone()).header("Accept", "image/*").send().ok()?;
+        match response.status().as_u16() {
+            301 | 302 | 303 | 307 | 308 if hop < REMOTE_IMAGE_REDIRECTS => {
+                let location = response.headers().get(reqwest::header::LOCATION)?.to_str().ok()?;
+                url = remote_image_redirect(&url, location)?;
+            }
+            200..=299 => return read_remote_image(response.content_length(), response, max_bytes),
+            _ => return None,
+        }
     }
     None
 }
 
-fn fetch_remote_image(url: &str) -> Option<(Vec<u8>, &'static str)> {
-    static REMOTE_IMG_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
-
-    let client = REMOTE_IMG_CLIENT.get_or_init(|| {
-        reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(REMOTE_IMAGE_TIMEOUT_SECS))
-            .redirect(reqwest::redirect::Policy::limited(8))
-            .build()
-            .expect("build image download client")
-    });
-
-    let resp = client.get(url).header("Accept", "image/*").send().ok()?;
-
-    if !resp.status().is_success() {
+fn read_remote_image(length: Option<u64>, body: impl Read, max_bytes: usize) -> Option<(Vec<u8>, &'static str)> {
+    if length.is_some_and(|length| length > max_bytes as u64) {
         return None;
     }
-
-    let content_len = resp.content_length().unwrap_or(0);
-    if content_len > REMOTE_IMAGE_MAX_BYTES as u64 {
-        return None;
-    }
-
-    let mut limited = resp.take((REMOTE_IMAGE_MAX_BYTES as u64) + 1);
     let mut bytes = Vec::new();
-    if limited.read_to_end(&mut bytes).is_err() {
+    body.take(max_bytes as u64 + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > max_bytes {
         return None;
     }
-    if bytes.is_empty() || bytes.len() > REMOTE_IMAGE_MAX_BYTES {
-        return None;
-    }
-
     let ext = image_ext_from_bytes(&bytes)?;
-
     Some((bytes, ext))
+}
+
+#[cfg(test)]
+mod remote_image_tests {
+    use super::*;
+
+    #[test]
+    fn only_https_image_urls_without_credentials_are_accepted() {
+        for invalid in [
+            "http://example.com/a.png", "ftp://example.com/a.png", "javascript:alert(1)",
+            "https://user:pass@example.com/a.png", "https://exam\nple.com/a.png",
+            "https://localhost./a.png", "https://host.localhost/a.png",
+            "https://printer.local/a.png", "https://api.internal/a.png",
+        ] {
+            assert!(normalize_remote_img_url(invalid).is_none(), "{invalid}");
+        }
+        for valid in ["https://example.com/a.png", "HTTPS://example.com/a.png", "//example.com/a.png"] {
+            assert_eq!(normalize_remote_img_url(valid).unwrap().as_str(), "https://example.com/a.png");
+        }
+    }
+
+    #[test]
+    fn private_and_reserved_addresses_are_rejected_including_mapped_addresses() {
+        for invalid in [
+            "127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1", "169.254.169.254",
+            "0.0.0.0", "0.1.2.3", "100.64.0.1", "100.127.255.255", "192.0.2.1",
+            "198.51.100.1", "203.0.113.1", "224.0.0.1", "240.0.0.1", "255.255.255.255",
+            "::", "::1", "fe80::1", "fc00::1", "fd00::1", "ff02::1", "2001:db8::1",
+            "3fff::1", "2002:7f00:1::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1",
+            "::ffff:100.64.0.1", "::ffff:192.0.2.1",
+        ] {
+            assert!(is_forbidden_ip(invalid.parse().unwrap()), "{invalid}");
+        }
+        for valid in [
+            "93.184.216.34", "100.63.255.255", "100.128.0.0", "2606:2800:220:1::1",
+            "198.18.0.1", "198.19.255.254", "::ffff:93.184.216.34", "::ffff:198.18.0.1",
+        ] {
+            assert!(!is_forbidden_ip(valid.parse().unwrap()), "{valid}");
+        }
+    }
+
+    #[test]
+    fn redirects_recheck_scheme_and_destination_before_connecting() {
+        let url = normalize_remote_img_url("https://93.184.216.34:8443/a.png").unwrap();
+        let next = remote_image_redirect(&url, "/b.png").unwrap();
+        assert_eq!(next.as_str(), "https://93.184.216.34:8443/b.png");
+        assert_eq!(validate_remote_url_and_resolve(&next).unwrap().0, ["93.184.216.34:8443".parse().unwrap()]);
+        assert!(remote_image_redirect(&url, "http://93.184.216.34/a.png").is_none());
+        for target in ["https://127.0.0.1/a.png", "//[::ffff:127.0.0.1]/a.png", "https://2130706433/a.png"] {
+            let next = remote_image_redirect(&url, target).unwrap();
+            assert!(validate_remote_url_and_resolve(&next).is_none());
+        }
+        assert!(fetch_remote_image(
+            normalize_remote_img_url("https://127.0.0.1/a.png").unwrap(),
+            1024,
+            &AtomicBool::new(true),
+        ).is_none());
+    }
+
+    #[test]
+    fn dns_rejects_mixed_answers_and_uses_the_checked_addresses_for_connection() {
+        use reqwest::dns::Resolve;
+        let public = "93.184.216.34:443".parse().unwrap();
+        let private = "192.168.0.9:443".parse().unwrap();
+        assert!(ValidatedImageAddresses::new(Vec::new()).is_none());
+        assert!(ValidatedImageAddresses::new(vec![public, private]).is_none());
+        let resolver = ValidatedImageAddresses::new(vec![public]).unwrap();
+        let addresses = tauri::async_runtime::block_on(resolver.resolve("example.com".parse().unwrap())).unwrap();
+        assert_eq!(addresses.collect::<Vec<_>>(), [public]);
+    }
+
+    #[test]
+    fn streaming_limit_works_with_or_without_content_length() {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1, 1).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let png = png.into_inner();
+        assert_eq!(read_remote_image(None, png.as_slice(), png.len()), Some((png.clone(), "png")));
+        assert!(read_remote_image(None, png.as_slice(), png.len() - 1).is_none());
+        assert!(read_remote_image(Some(png.len() as u64), png.as_slice(), png.len() - 1).is_none());
+        assert!(read_remote_image(None, "not an image".as_bytes(), 100).is_none());
+    }
+
+    #[test]
+    fn disabled_or_disallowed_downloads_leave_the_original_html() {
+        let html = r#"<p>Text<img src="https://example.com/photo.png"><img src="//example.net/image.png"><img src="http://example.org/icon.png"></p>"#;
+        assert_eq!(localize_remote_images(html, None, &mut PendingAttachments::default(), 1024, &AtomicBool::new(false)), html);
+        let html = r#"<img src="https://127.0.0.1/photo.png"><img src="http://example.org/icon.png">"#;
+        assert_eq!(localize_remote_images(html, None, &mut PendingAttachments::default(), 1024, &AtomicBool::new(true)), html);
+    }
 }
 
 fn normalize_html_image_src_candidate(src: &str) -> Option<String> {
@@ -2343,6 +2526,63 @@ mod tests {
     }
 
     #[test]
+    fn mac_app_bundle_paths_with_trailing_slashes_are_literal() {
+        for path in ["/Applications/Safe[Box].app", "/Applications/Safe[Box].app/"] {
+            let policy = AppCleanupPolicy {
+                id: String::new(),
+                enabled: true,
+                app_name: String::new(),
+                app_path: path.into(),
+                action: "ignore".into(),
+                content_types: vec!["text".into()],
+                cleanup_rules: String::new(),
+            };
+            for kind in ["text", "image", "video", "file"] {
+                assert!(app_cleanup_policy_matches(&policy, "SafeBox", Some("/Applications/Safe[Box].app/"), kind));
+                assert!(!app_cleanup_policy_matches(&policy, "SafeBox", Some("/Applications/SafeB.app"), kind));
+            }
+        }
+    }
+
+    #[test]
+    fn app_policies_match_symlink_and_running_bundle_paths() {
+        let root = std::env::temp_dir().join(format!("dewclip-ignored-app-{}", uuid::Uuid::new_v4()));
+        let bundle = root.join("System/Browser.app");
+        let alias = root.join("Applications/Alternate Name.app");
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::create_dir(alias.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&bundle, &alias).unwrap();
+        let mut policy = AppCleanupPolicy {
+            id: String::new(),
+            enabled: true,
+            app_name: String::new(),
+            app_path: format!("{}/", alias.display()),
+            action: "ignore".into(),
+            content_types: Vec::new(),
+            cleanup_rules: String::new(),
+        };
+        assert!(app_cleanup_policy_matches(&policy, "Browser", bundle.to_str(), "image"));
+        policy.app_path = bundle.to_string_lossy().into_owned();
+        assert!(app_cleanup_policy_matches(&policy, "Alternate Name", alias.to_str(), "text"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn app_policy_executable_name_fallback_trims_trailing_slashes() {
+        let policy = AppCleanupPolicy {
+            id: String::new(),
+            enabled: true,
+            app_name: String::new(),
+            app_path: "/Volumes/Old Disk/Browser.app/".into(),
+            action: "ignore".into(),
+            content_types: Vec::new(),
+            cleanup_rules: String::new(),
+        };
+        assert!(app_cleanup_policy_matches(&policy, "Browser", Some("/Applications/Browser.app"), "text"));
+        assert!(app_cleanup_policy_matches(&policy, "Browser.app", None, "text"));
+    }
+
+    #[test]
     fn app_cleanup_policy_match_accepts_executable_name_variant() {
         let policy = AppCleanupPolicy {
             id: "1".to_string(),
@@ -2647,10 +2887,13 @@ pub fn app_cleanup_policy_matches(
     }
 
     let source_app = source_app.trim();
-    let source_app_path = source_app_path.unwrap_or("").trim();
+    let source_app_path = source_app_path.unwrap_or("").trim().trim_end_matches('/');
     let policy_path = policy.app_path.trim();
+    let literal_policy_path = policy_path.trim_end_matches('/');
     if !policy_path.is_empty() && !source_app_path.is_empty() {
-        if policy_path.len() >= 2 && policy_path.starts_with('/') && policy_path.ends_with('/') {
+        if policy_path.len() >= 2 && policy_path.starts_with('/') && policy_path.ends_with('/')
+            && !literal_policy_path.to_ascii_lowercase().ends_with(".app")
+        {
             let re_str = &policy_path[1..policy_path.len() - 1];
             if let Ok(re) = Regex::new(re_str) {
                 if re.is_match(source_app_path) {
@@ -2658,11 +2901,14 @@ pub fn app_cleanup_policy_matches(
                 }
             }
         }
-        if policy_path.eq_ignore_ascii_case(source_app_path) {
+        let normalize = crate::infrastructure::app_path::normalize_app_path;
+        if literal_policy_path.eq_ignore_ascii_case(source_app_path)
+            || normalize(literal_policy_path).eq_ignore_ascii_case(&normalize(source_app_path))
+        {
             return true;
         }
-        if executable_name_matches(policy_path, source_app_path)
-            || app_id_matches_process_path(policy_path, source_app_path)
+        if executable_name_matches(literal_policy_path, source_app_path)
+            || app_id_matches_process_path(literal_policy_path, source_app_path)
         {
             return true;
         }
@@ -2688,9 +2934,9 @@ pub fn app_cleanup_policy_matches(
         }
     }
 
-    if !policy_path.is_empty()
+    if !literal_policy_path.is_empty()
         && !source_app.is_empty()
-        && executable_name_matches(policy_path, source_app)
+        && executable_name_matches(literal_policy_path, source_app)
     {
         return true;
     }
@@ -2778,6 +3024,8 @@ pub(crate) fn localize_remote_images(
     html: &str,
     data_dir: Option<&Path>,
     pending: &mut PendingAttachments,
+    max_bytes: usize,
+    enabled: &AtomicBool,
 ) -> String {
     const MAX_IMAGES: usize = 8;
     let attachments = data_dir.map(|dir| dir.join("attachments"));
@@ -2789,8 +3037,9 @@ pub(crate) fn localize_remote_images(
                 return caps[0].to_string();
             };
             if images.len() < MAX_IMAGES && !images.contains_key(&url) {
-                let source = fetch_remote_image(&url).and_then(|(bytes, ext)| {
+                let source = fetch_remote_image(url.clone(), max_bytes, enabled).and_then(|(bytes, ext)| {
                     if let Some(attachments) = &attachments {
+                        let _writer = crate::database::ATTACHMENT_WRITERS.read().unwrap();
                         let target =
                             pending.write(attachments, &bytes, ext, stable_bytes_hash(&bytes))?;
                         return Some(format!("file://{}", target.display()));

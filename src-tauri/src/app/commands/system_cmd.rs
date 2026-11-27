@@ -73,19 +73,6 @@ fn open_path_in_file_manager(path: &std::path::Path) -> AppResult<()> {
     }
 }
 
-fn content_type_to_ext(content_type: &str) -> String {
-    let normalized = content_type.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "text" | "code" => "txt".to_string(),
-        "rich_text" => "html".to_string(),
-        "image" => "png".to_string(),
-        "video" => "mp4".to_string(),
-        "url" => "html".to_string(),
-        other if !other.is_empty() => other.to_string(),
-        _ => "txt".to_string(),
-    }
-}
-
 #[tauri::command]
 pub async fn scan_installed_apps() -> Vec<serde_json::Value> {
     #[cfg(target_os = "macos")]
@@ -95,21 +82,21 @@ pub async fn scan_installed_apps() -> Vec<serde_json::Value> {
 }
 
 #[tauri::command]
-#[allow(non_snake_case)]
-pub fn get_system_default_app(contentType: String) -> String {
-    let ext = content_type_to_ext(&contentType);
-    #[cfg(target_os = "macos")]
-    {
-        return crate::infrastructure::macos_api::apps::get_system_default_app(&ext);
-    }
+pub async fn get_system_default_app(content_type: String) -> String {
+    crate::infrastructure::macos_api::apps::get_system_default_app(&content_type)
 }
 
 #[tauri::command]
 pub async fn get_associated_apps(extension: String) -> Vec<serde_json::Value> {
-    #[cfg(target_os = "macos")]
-    {
-        crate::infrastructure::macos_api::apps::get_associated_apps(&extension)
-    }
+    crate::infrastructure::macos_api::apps::get_associated_apps(&extension)
+}
+
+#[tauri::command]
+pub async fn canonicalize_app_paths(paths: Vec<String>) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| crate::infrastructure::app_path::normalize_app_path(path).into_owned())
+        .collect()
 }
 
 #[tauri::command]

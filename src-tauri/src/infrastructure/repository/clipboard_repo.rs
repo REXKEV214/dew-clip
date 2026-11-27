@@ -4,7 +4,6 @@ use crate::database::{
 };
 use crate::domain::models::{ClipboardEntry, EntryIdentity};
 use crate::infrastructure::encryption;
-use crate::infrastructure::repository::settings_repo::SqliteSettingsRepository;
 use rusqlite::{params, OptionalExtension};
 use rusqlite::Connection;
 use std::collections::HashSet;
@@ -16,6 +15,9 @@ use urlencoding::decode;
 const RICH_IMAGE_FALLBACK_PREFIX: &str = "<!--DEWCLIP_RICH_IMAGE:";
 const RICH_IMAGE_FALLBACK_SUFFIX: &str = "-->";
 const PASTED_ATTACHMENT_GRACE_MS: i64 = 120_000;
+const DELETABLE_HISTORY: &str = "history.is_pinned = 0
+    AND (history.tags = '[]' OR history.tags IS NULL)
+    AND NOT EXISTS (SELECT 1 FROM entry_tags WHERE entry_id = history.id)";
 
 fn decode_for_cleanup(value: &str) -> Result<std::borrow::Cow<'_, str>, String> {
     if encryption::is_encrypted_value(value) {
@@ -1058,7 +1060,7 @@ impl SqliteClipboardRepository {
         Ok(deleted)
     }
 
-    fn queue_attachment_deletions(
+    pub(crate) fn queue_attachment_deletions(
         conn: &Connection,
         files: &[PathBuf],
         deadline: i64,
@@ -1410,57 +1412,92 @@ impl SqliteClipboardRepository {
         }
     }
 
-    pub fn enforce_limit_with_conn(
+    pub(crate) fn prune_history_batch(
         &self,
         conn: &Connection,
-        data_dir: Option<&std::path::Path>,
-    ) -> Result<Vec<i64>, String> {
-        // Check if storage limit is enabled
-        if let Ok(Some(limit_enabled_str)) =
-            SqliteSettingsRepository::get_raw(conn, "app.persistent_limit_enabled")
-        {
-            if limit_enabled_str == "false" {
-                return Ok(Vec::new());
-            }
+        data_dir: &std::path::Path,
+        cutoff: Option<i64>,
+        batch_size: u32,
+    ) -> crate::error::AppResult<Vec<EntryIdentity>> {
+        let tx = conn.unchecked_transaction()?;
+        let identities: Vec<_> = {
+            let mut stmt = tx.prepare_cached(&format!(
+                "SELECT id, created_at FROM clipboard_history AS history
+                 WHERE {DELETABLE_HISTORY}
+                   AND (?1 IS NULL OR MAX(sort_at, last_used_at, created_at) < ?1)
+                 ORDER BY sort_at ASC, id ASC LIMIT ?2",
+            ))?;
+            let rows = stmt.query_map(params![cutoff, batch_size], |row| {
+                Ok(EntryIdentity { id: row.get(0)?, created_at: row.get(1)? })
+            })?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        if !identities.is_empty() {
+            let ids: Vec<_> = identities.iter().map(|entry| entry.id).collect();
+            self.delete_entries_in(&tx, &ids, Some(data_dir), now_ms())?;
         }
+        tx.commit()?;
+        Ok(identities)
+    }
 
-        // Get the storage limit
-        if let Ok(Some(limit_str)) = SqliteSettingsRepository::get_raw(conn, "app.persistent_limit")
-        {
-            if let Ok(limit) = limit_str.parse::<i32>() {
-                // Count non-pinned entries
-                let count: i32 = conn.query_row(
-                    "SELECT COUNT(*) FROM clipboard_history WHERE is_pinned = 0 AND (tags = '[]' OR tags IS NULL)",
-                    [],
-                    |row| row.get(0)
-                ).map_err(|e| e.to_string())?;
-
-                if count > limit {
-                    // First, get the IDs that will be deleted
-                    let to_delete = count - limit;
-                    let deleted_ids: Vec<i64> = {
-                        let mut stmt = conn
-                            .prepare(
-                                "SELECT id FROM clipboard_history 
-                             WHERE is_pinned = 0 AND (tags = '[]' OR tags IS NULL)
-                             ORDER BY sort_at ASC
-                             LIMIT ?",
-                            )
-                            .map_err(|e| e.to_string())?;
-
-                        let rows = stmt
-                            .query_map([to_delete], |row| row.get(0))
-                            .map_err(|e| e.to_string())?;
-                        rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())?
-                    };
-                    // Actually delete records (and files if needed)
-                    self.delete_entries(conn, &deleted_ids, data_dir, now_ms())?;
-                    return Ok(deleted_ids);
+    /// A lower bound: whole pages outside history and the stored text of
+    /// protected rows. A history page can hold both protected and ordinary rows.
+    pub(crate) fn protected_history_bytes(
+        &self,
+        conn: &Connection,
+        attachments: &std::path::Path,
+        max_bytes: u64,
+    ) -> crate::error::AppResult<u64> {
+        let base: u64 = conn.query_row(
+            "SELECT COALESCE(SUM(pgsize), 0) FROM dbstat
+             WHERE aggregate = TRUE AND name NOT IN (
+                SELECT name FROM sqlite_schema
+                 WHERE tbl_name IN ('clipboard_history', 'pending_attachment_deletions')
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        let mut bytes = base;
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT content, html_content, is_external = 1 OR content_type IN ('image', 'video', 'file', 'audio'),
+                    length(CAST(content AS BLOB)) + COALESCE(length(CAST(html_content AS BLOB)), 0)
+                    + length(CAST(preview AS BLOB)) + COALESCE(length(CAST(tags AS BLOB)), 0)
+                    + COALESCE(length(CAST(note AS BLOB)), 0) + COALESCE(length(CAST(ocr_text AS BLOB)), 0)
+             FROM clipboard_history AS history WHERE NOT COALESCE(({DELETABLE_HISTORY}), FALSE)
+             UNION ALL
+             SELECT content, html_content, content_type IN ('image', 'video', 'file'), 0
+             FROM favorites WHERE ?1 AND (html_content IS NOT NULL OR content_type IN ('image', 'video', 'file'))",
+        ))?;
+        let count_attachments = attachments.symlink_metadata().is_ok_and(|metadata| metadata.is_dir());
+        let mut rows = stmt.query([count_attachments])?;
+        let mut counted = HashSet::new();
+        while bytes <= max_bytes {
+            let Some(row) = rows.next()? else { break };
+            bytes += row.get::<_, u64>(3)?;
+            if bytes > max_bytes {
+                break;
+            }
+            if !count_attachments {
+                continue;
+            }
+            let content = row.get_ref(0)?.as_str().map_err(|error| error.to_string())?;
+            let html = row.get_ref(1)?.as_str_or_null().map_err(|error| error.to_string())?;
+            let paths = self.collect_attachment_paths_for_cleanup(content, html, row.get(2)?, attachments);
+            // An unreadable row still contributes its stored byte length.
+            let Ok(paths) = paths else { continue };
+            for path in paths {
+                if !counted.insert(path.clone()) {
+                    continue;
+                }
+                match path.symlink_metadata() {
+                    Ok(metadata) if metadata.is_file() => bytes += metadata.len(),
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
                 }
             }
         }
-
-        Ok(Vec::new())
+        Ok(bytes)
     }
     pub fn toggle_pin_with_conn(
         &self,
