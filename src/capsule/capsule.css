@@ -5,7 +5,45 @@
 :root {
   --accent: #0a84ff;
   --accent-strong: #0066e0;
+  --accent-ink-dark: #70b8ff;
   --accent-rgb: 10, 132, 255;
+  --capsule-title: rgba(0, 0, 0, 0.86);
+  --capsule-subtitle: rgba(0, 0, 0, 0.52);
+  --capsule-icon-fill: rgba(var(--accent-rgb), 0.14);
+  --capsule-icon-ink: var(--accent);
+  --capsule-count-fill: rgba(var(--accent-rgb), 0.16);
+  --capsule-count-ink: var(--accent-strong);
+  --capsule-check-ink: #fff;
+  --capsule-thumb-edge: rgba(0, 0, 0, 0.12);
+  --capsule-thumb-shadow: rgba(0, 0, 0, 0.12);
+  color-scheme: light dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --capsule-title: rgba(255, 255, 255, 0.94);
+  --capsule-subtitle: rgba(255, 255, 255, 0.73);
+  --capsule-icon-fill: rgba(var(--accent-rgb), 0.22);
+  --capsule-icon-ink: var(--accent-ink-dark);
+  --capsule-count-fill: rgba(var(--accent-rgb), 0.24);
+  --capsule-count-ink: var(--accent-ink-dark);
+  --capsule-check-ink: #111217;
+  --capsule-thumb-edge: rgba(255, 255, 255, 0.28);
+  --capsule-thumb-shadow: rgba(0, 0, 0, 0.36);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --capsule-title: CanvasText;
+    --capsule-subtitle: CanvasText;
+    --capsule-icon-ink: var(--accent-ink-dark);
+    --capsule-count-ink: var(--accent-ink-dark);
+  }
 }
 
 * {
@@ -119,32 +157,33 @@ body {
   color: #fff;
 }
 
-/* Liquid Glass: dark text, like the main window. */
+/* Liquid Glass follows the window appearance. */
 .capsule.is-glass {
-  color: rgba(0, 0, 0, 0.86);
+  color: var(--capsule-title);
 }
 
 .is-glass .capsule-icon:not(:has(img)) {
-  background: rgba(var(--accent-rgb), 0.14);
-  color: var(--accent);
+  background: var(--capsule-icon-fill);
+  color: var(--capsule-icon-ink);
 }
 
 .is-glass .capsule-subtitle {
-  color: rgba(0, 0, 0, 0.52);
+  color: var(--capsule-subtitle);
 }
 
 .is-glass .capsule-count {
-  background: rgba(var(--accent-rgb), 0.16);
-  color: var(--accent-strong);
+  background: var(--capsule-count-fill);
+  color: var(--capsule-count-ink);
 }
 
 .is-glass .capsule-check {
   background: var(--accent);
+  color: var(--capsule-check-ink);
   box-shadow: 0 2px 8px rgba(var(--accent-rgb), 0.35);
 }
 
 .is-glass .capsule-thumb {
-  box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 0 0 0.5px var(--capsule-thumb-edge), 0 2px 6px var(--capsule-thumb-shadow);
 }
 
 /* Black island. The black is the window's; the page stays transparent so

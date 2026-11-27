@@ -1,3 +1,4 @@
+pub mod appearance;
 pub mod capsule;
 pub mod commands;
 pub(crate) mod data_directory;

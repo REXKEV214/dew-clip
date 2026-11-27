@@ -356,6 +356,7 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("app.hide_tray_icon", "false"),
     ("app.hide_dock_icon", "false"),
     ("app.glass_level", "35"),
+    (crate::app::appearance::SETTING_KEY, "system"),
     ("app.persistent", "true"),
     ("app.history_retention_days", "0"),
     ("app.storage_limit_mb", "0"),

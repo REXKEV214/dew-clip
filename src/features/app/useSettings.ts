@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { translations, type TranslationKey } from "../../locales";
 import type { Locale, Translate } from "../../shared/types";
 import { isTauriRuntime } from "../../shared/lib/tauriRuntime";
 import { ACCENT_SETTING_KEY, applyAccent, mirrorAccent, normalizeAccent } from "../../shared/lib/accent";
+import {
+  APPEARANCE_CHANGED_EVENT, APPEARANCE_SETTING_KEY, applyEffectiveTheme, mirrorAppearance,
+  type AppearanceState,
+} from "../../shared/lib/appearance";
 
 const LANGUAGE_MIRROR_KEY = "dewclip_language";
 
@@ -32,7 +37,8 @@ export const useSettings = (): SettingsStore => {
     }
     invoke<Record<string, string>>("get_settings")
       .then((loaded) => {
-        setValues(loaded);
+        // An appearance event may have arrived while the settings were loading.
+        setValues((current) => ({ ...loaded, ...current }));
         setReady(true);
       })
       .catch((error) => {
@@ -40,6 +46,37 @@ export const useSettings = (): SettingsStore => {
         console.error("Settings failed to load", error);
         setReady(true);
       });
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    let receivedEvent = false;
+
+    const applyState = ({ preference, effective }: AppearanceState) => {
+      if (disposed) return;
+      applyEffectiveTheme(effective);
+      mirrorAppearance(preference);
+      setValues((current) => current[APPEARANCE_SETTING_KEY] === preference ? current : {
+        ...current,
+        [APPEARANCE_SETTING_KEY]: preference,
+      });
+    };
+    const subscription = listen<AppearanceState>(APPEARANCE_CHANGED_EVENT, ({ payload }) => {
+      if (disposed) return;
+      receivedEvent = true;
+      applyState(payload);
+    });
+    void subscription.then(async () => {
+      if (disposed) return;
+      const state = await invoke<AppearanceState>("get_appearance_state");
+      if (!receivedEvent) applyState(state);
+    }).catch((error) => console.error("Appearance failed to load", error));
+
+    return () => {
+      disposed = true;
+      void subscription.then((unlisten) => unlisten(), () => {});
+    };
   }, []);
 
   const language: Locale = useMemo(() => {
@@ -83,7 +120,7 @@ export const useSettings = (): SettingsStore => {
 
   const save = useCallback(
     (key: string, value: string) => {
-      remember(key, value);
+      if (key !== APPEARANCE_SETTING_KEY) remember(key, value);
       invoke("save_setting", { key, value }).catch((error) => console.error(`Saving ${key} failed`, error));
     },
     [remember]

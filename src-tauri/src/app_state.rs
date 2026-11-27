@@ -1,3 +1,4 @@
+use crate::app::appearance::AppearancePreference;
 use crate::domain::models::{ClipboardEntry, EntryIdentity};
 use crate::infrastructure::macos_api::window::WindowPinMode;
 use crate::services::encryption_queue::EncryptionQueue;
@@ -27,6 +28,7 @@ pub struct SettingsState {
     /// `follow_mouse` | `last` | `fixed`
     pub window_position_mode: Mutex<String>,
     pub window_pin_mode: Mutex<WindowPinMode>,
+    pub appearance: Mutex<AppearancePreference>,
     /// 0 (clearest) – 100 (most tinted).
     pub glass_level: AtomicU64,
     /// 复制提示弹窗: the pill that pops up at the top of the screen on each copy.
@@ -59,6 +61,7 @@ impl SettingsState {
             main_hotkey,
             window_position_mode,
             window_pin_mode,
+            appearance,
             glass_level,
             capsule_enabled,
             capsule_style,
@@ -81,6 +84,7 @@ impl SettingsState {
         *self.main_hotkey.lock().unwrap() = main_hotkey.into_inner().unwrap();
         *self.window_position_mode.lock().unwrap() = window_position_mode.into_inner().unwrap();
         *self.window_pin_mode.lock().unwrap() = window_pin_mode.into_inner().unwrap();
+        *self.appearance.lock().unwrap() = appearance.into_inner().unwrap();
         self.glass_level.store(glass_level.into_inner(), Ordering::Relaxed);
         self.capsule_enabled.store(capsule_enabled.into_inner(), Ordering::Relaxed);
         *self.capsule_style.lock().unwrap() = capsule_style.into_inner().unwrap();
@@ -138,6 +142,7 @@ pub struct EncryptionQueueState(pub EncryptionQueue);
 
 #[cfg(test)]
 mod tests {
+    use crate::app::appearance::{AppearancePreference, SETTING_KEY};
     use crate::app::setup::{load_settings, settings_state_from};
     use crate::infrastructure::macos_api::window::{WindowPinMode, PIN_MODE_KEY};
     use crate::infrastructure::repository::settings_repo::{SettingsRepository, SqliteSettingsRepository};
@@ -149,8 +154,10 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);")
             .unwrap();
-        let repo = SqliteSettingsRepository::new(Arc::new(Mutex::new(conn)));
+        let conn = Arc::new(Mutex::new(conn));
+        let repo = SqliteSettingsRepository::new(conn.clone());
         let defaults = settings_state_from(&load_settings(&repo).unwrap());
+        assert_eq!(*defaults.appearance.lock().unwrap(), AppearancePreference::System);
         repo.set("app.delete_after_paste", "true").unwrap();
         repo.set("app.cleanup_rules", "secret => ").unwrap();
         repo.set("app.hotkey", "Ctrl+Shift+K").unwrap();
@@ -165,7 +172,9 @@ mod tests {
         repo.set("app.storage_limit_mb", "1024").unwrap();
         repo.set("app.download_remote_images", "false").unwrap();
         repo.set("app.remote_image_max_mb", "16").unwrap();
+        repo.set(SETTING_KEY, "dark").unwrap();
         let running = settings_state_from(&load_settings(&repo).unwrap());
+        assert_eq!(*running.appearance.lock().unwrap(), AppearancePreference::Dark);
         assert!(running.delete_after_paste.load(Ordering::Relaxed));
         assert_eq!(*running.window_pin_mode.lock().unwrap(), WindowPinMode::Normal);
         assert_eq!(running.history_retention_days.load(Ordering::Relaxed), 30);
@@ -174,8 +183,11 @@ mod tests {
         assert_eq!(running.remote_image_max_bytes.load(Ordering::Relaxed), 16 * crate::database::BYTES_PER_MB);
 
         repo.clear().unwrap();
+        crate::database::seed_defaults(&conn.lock().unwrap()).unwrap();
+        assert_eq!(repo.get(SETTING_KEY).unwrap().as_deref(), Some("system"));
         running.take_values_from(settings_state_from(&load_settings(&repo).unwrap()));
 
+        assert_eq!(*running.appearance.lock().unwrap(), AppearancePreference::System);
         assert!(!running.delete_after_paste.load(Ordering::Relaxed));
         assert_eq!(*running.cleanup_rules.lock().unwrap(), *defaults.cleanup_rules.lock().unwrap());
         assert_eq!(*running.main_hotkey.lock().unwrap(), *defaults.main_hotkey.lock().unwrap());
