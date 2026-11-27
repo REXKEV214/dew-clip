@@ -1,4 +1,4 @@
-use super::{CheckError, Release};
+use super::{CheckError, Release, ReleaseAsset};
 use semver::Version;
 use serde::Deserialize;
 use std::cmp::Ordering;
@@ -7,6 +7,8 @@ use tauri::Url;
 
 pub(super) const ENDPOINT: &str = "https://api.github.com/repos/REXKEV214/dew-clip/releases/latest";
 pub(super) const RELEASES: &str = "https://github.com/REXKEV214/dew-clip/releases/";
+pub(super) const DOWNLOADS: &str = "https://github.com/REXKEV214/dew-clip/releases/download/";
+pub(super) const MAX_ASSET_SIZE: u64 = 64 * 1024 * 1024;
 const MAX_RETRY_AFTER_SECS: u64 = 24 * 60 * 60;
 
 #[derive(Default)]
@@ -50,6 +52,59 @@ struct GithubRelease {
     draft: bool,
     prerelease: bool,
     body: Option<String>,
+    #[serde(default)]
+    assets: serde_json::Value,
+}
+
+pub(super) fn dmg_name(version: &Version) -> String {
+    format!("DewClip_{version}.dmg")
+}
+
+pub(super) fn valid_asset(asset: &ReleaseAsset, base: &str) -> bool {
+    let raw = &asset.download_url;
+    if asset.size == 0
+        || asset.size > MAX_ASSET_SIZE
+        || asset.sha256.len() != 64
+        || !asset.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || raw.len() > 512
+        || !raw.starts_with(base)
+        || raw.chars().any(|ch| ch.is_control() || ch == '\\')
+    {
+        return false;
+    }
+    let (Ok(url), Ok(base)) = (Url::parse(raw), Url::parse(base)) else {
+        return false;
+    };
+    url.origin() == base.origin()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path().starts_with(base.path())
+        && url.as_str().len() <= 512
+}
+
+fn release_asset(
+    assets: &serde_json::Value,
+    version: &Version,
+    base: &str,
+) -> Option<ReleaseAsset> {
+    let name = dmg_name(version);
+    let mut matching = assets
+        .as_array()?
+        .iter()
+        .filter(|asset| asset["name"].as_str() == Some(&name));
+    let asset = matching.next()?;
+    if matching.next().is_some() {
+        return None;
+    }
+    let asset = ReleaseAsset {
+        size: asset["size"].as_u64()?,
+        sha256: asset["digest"]
+            .as_str()?
+            .strip_prefix("sha256:")?
+            .to_ascii_lowercase(),
+        download_url: asset["browser_download_url"].as_str()?.to_owned(),
+    };
+    valid_asset(&asset, base).then_some(asset)
 }
 
 pub(super) fn parse_version(tag: &str) -> Option<Version> {
@@ -91,7 +146,7 @@ fn release_from_body(body: &[u8], base: &str) -> Result<Option<Release>, Failure
     }
     let notes = remote.body.unwrap_or_default();
     let mut notes_preview = String::new();
-    // Leave room for JSON escaping and the release URL in the 2 KB cache.
+    // 限制弹窗中的更新日志长度。
     for line in notes
         .lines()
         .map(str::trim)
@@ -112,6 +167,7 @@ fn release_from_body(body: &[u8], base: &str) -> Result<Option<Release>, Failure
         }
     }
     Ok(Some(Release {
+        asset: release_asset(&remote.assets, &version, &format!("{base}download/")),
         version,
         release_url: release_url(&remote.html_url, base),
         notes_preview,
@@ -244,6 +300,82 @@ mod tests {
     use super::*;
 
     const SAMPLE: &str = r#"{"tag_name":"v1.2.0","html_url":"https://github.com/REXKEV214/dew-clip/releases/tag/v1.2.0","draft":false,"prerelease":false,"body":"Line one\n\n<em>Line two</em>\nThree\nFour\nFive\nSix"}"#;
+
+    #[test]
+    fn release_accepts_only_one_matching_safe_dmg_with_a_valid_size_and_digest() {
+        use serde_json::{json, Value};
+        let asset = json!({
+            "name": "DewClip_1.2.0.dmg",
+            "size": 4683663,
+            "digest": format!("sha256:{}", "AB".repeat(32)),
+            "browser_download_url": format!("{DOWNLOADS}v1.2.0/DewClip_1.2.0.dmg"),
+        });
+        let parse = |assets: Value, base: &str| {
+            let mut release: Value = serde_json::from_str(SAMPLE).unwrap();
+            if !assets.is_null() {
+                release["assets"] = assets;
+            }
+            release_from_body(&serde_json::to_vec(&release).unwrap(), base)
+                .unwrap()
+                .unwrap()
+                .asset
+        };
+        let accepted = parse(json!([asset, {"name": "notes.txt"}]), RELEASES).unwrap();
+        assert_eq!(accepted.sha256, "ab".repeat(32));
+        assert_eq!(accepted.size, 4683663);
+        assert!(parse(Value::Null, RELEASES).is_none());
+        assert!(parse(json!([asset, asset]), RELEASES).is_none());
+        for (key, invalid) in [
+            ("name", json!("DewClip_1.1.0.dmg")),
+            ("name", json!("../DewClip_1.2.0.dmg")),
+            ("size", json!(0)),
+            ("size", json!(MAX_ASSET_SIZE + 1)),
+            ("digest", Value::Null),
+            ("digest", json!(format!("sha256:{}", "g".repeat(64)))),
+            ("digest", json!(format!("sha512:{}", "a".repeat(64)))),
+            ("digest", json!("sha256:abcd")),
+            (
+                "browser_download_url",
+                json!("https://github.com/other/repo/releases/download/v1/file.dmg"),
+            ),
+            (
+                "browser_download_url",
+                json!(DOWNLOADS.replace("https:", "http:") + "file.dmg"),
+            ),
+            (
+                "browser_download_url",
+                json!(DOWNLOADS.replace("github.com", "github.com:443") + "file.dmg"),
+            ),
+            (
+                "browser_download_url",
+                json!(DOWNLOADS.replace("github.com", "user@github.com") + "file.dmg"),
+            ),
+            (
+                "browser_download_url",
+                json!(format!("{DOWNLOADS}%2e%2e/file.dmg")),
+            ),
+            (
+                "browser_download_url",
+                json!(format!("{DOWNLOADS}a\\file.dmg")),
+            ),
+            (
+                "browser_download_url",
+                json!(format!("{DOWNLOADS}a\nfile.dmg")),
+            ),
+            (
+                "browser_download_url",
+                json!(format!("{DOWNLOADS}{}", "a".repeat(512))),
+            ),
+        ] {
+            let mut rejected = asset.clone();
+            rejected[key] = invalid;
+            assert!(parse(json!([rejected]), RELEASES).is_none(), "{key}");
+        }
+        let mut local = asset;
+        local["browser_download_url"] =
+            json!("http://127.0.0.1:12345/releases/download/v1/file.dmg");
+        assert!(parse(json!([local]), "http://127.0.0.1:12345/releases/").is_some());
+    }
 
     #[test]
     fn semantic_versions_ignore_build_metadata_and_filter_unstable_releases() {

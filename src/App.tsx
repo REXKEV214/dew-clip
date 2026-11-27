@@ -900,12 +900,19 @@ const App = () => {
       <ToastContainer toasts={toasts} />
       {dialogRelease && updateStatus && (
         <UpdateDialog
+          key={dialogRelease.version}
           t={t}
           currentVersion={updateStatus.currentVersion}
           release={dialogRelease}
+          ready={dialogRelease.version === updateStatus.ready?.version}
+          download={updateStatus.download}
+          incomplete={dialogRelease.version === updates.incompleteVersion}
+          preview={updates.installPreview}
           onLater={() => updates.later(dialogRelease.version)}
           onSkip={() => updates.skip(dialogRelease.version)}
           onOpenReleasePage={updates.openReleasePage}
+          onDownload={updates.download}
+          onInstall={updates.install}
         />
       )}
       <ConfirmDialog
