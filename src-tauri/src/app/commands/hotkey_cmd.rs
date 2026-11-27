@@ -183,7 +183,7 @@ pub fn is_typing_hotkey(hotkey: &str) -> bool {
     !silent
 }
 
-/// `allow_typing`: the wake hotkey may be Shift + a letter (default ⇧Z) — the
+/// `allow_typing`: the wake hotkey may be Shift + a letter (e.g. ⇧Z) — the
 /// user accepts that the character can't be typed while it is registered.
 /// Shift plus one letter or digit, e.g. `Shift+Z`.
 pub fn is_shift_letter_hotkey(hotkey: &str) -> bool {

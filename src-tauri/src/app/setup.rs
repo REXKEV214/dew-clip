@@ -303,7 +303,7 @@ pub(crate) fn load_settings(repo: &SqliteSettingsRepository) -> rusqlite::Result
         window_pinned: flag("app.window_pinned", false),
         window_width: size("app.window_logical_width"),
         window_height: size("app.window_logical_height"),
-        main_hotkey: get("app.hotkey", "Shift+Z"),
+        main_hotkey: get("app.hotkey", "Alt+Z"),
         first_open: !flag("app.onboarding_done", false),
         window_position_mode: crate::app::window_manager::normalize_position_mode(&get(
             "app.window_position_mode",

@@ -346,7 +346,7 @@ pub const AUTOSTART_PENDING_KEY: &str = "app.autostart_pending";
 
 /// Defaults for every DewClip setting. `INSERT OR IGNORE`: saved values win.
 pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
-    ("app.hotkey", "Shift+Z"),
+    ("app.hotkey", "Alt+Z"),
     ("app.silent_start", "false"),
     ("app.window_position_mode", "follow_mouse"),
     ("app.hide_tray_icon", "false"),
