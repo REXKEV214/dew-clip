@@ -71,6 +71,7 @@ export const UpdateSettings = ({ t, status, checking, result, onCheck, onView, o
   const report = result === "failed" ? null : result;
   const error = result === "failed" ? "failed" : report?.errorKind;
   const latest = error ? null : report ? report.latest : status?.available ? status.latest : null;
+  const retryMinutes = Math.ceil((report?.retryAfterSecs ?? 0) / 60);
   return (
     <>
       {status && <div className="brand-version">{status.currentVersion}</div>}
@@ -81,8 +82,9 @@ export const UpdateSettings = ({ t, status, checking, result, onCheck, onView, o
         {error && (
           <>
             <span>{t(`update_${error}`)}</span>
-            {error === "rate_limited" && Boolean(report?.retryAfterSecs) && (
-              <span>{t("update_retry_minutes").replace("{minutes}", String(Math.ceil((report?.retryAfterSecs ?? 0) / 60)))}</span>
+            {error === "rate_limited" && retryMinutes > 0 && (
+              <span>{t(retryMinutes === 1 ? "update_retry_minute" : "update_retry_minutes")
+                .replace("{minutes}", String(retryMinutes))}</span>
             )}
             <button type="button" className="link-button" onClick={() => onOpenReleasePage(`${GITHUB_URL}/releases`)}>
               {t("update_open_releases")}

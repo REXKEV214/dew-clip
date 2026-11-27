@@ -74,3 +74,11 @@ test.each([
     host.remove();
   }
 });
+
+test.each(["en", "zh"] as const)("the pinned window hints list both close shortcuts in %s", (language) => {
+  const { pinned_esc_hint, pinned_normal_hint } = translations[language];
+  for (const hint of [pinned_esc_hint, pinned_normal_hint]) {
+    expect(hint).toContain("Esc");
+    expect(hint).toContain("⌘W");
+  }
+});

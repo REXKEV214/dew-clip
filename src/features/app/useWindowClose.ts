@@ -24,9 +24,10 @@ export const useWindowClose = (options: CloseOptions) => {
   const closing = useRef(false);
   const isComposing = () => composing.current !== null;
 
-  const requestCloseWindow = () => {
+  const requestCloseWindow = (source: "shortcut" | "button" = "shortcut") => {
     const { t, blocked, hasUnsavedChanges, hideWindow, openConfirm, closeConfirm } = current.current;
-    if (closing.current || isComposing() || hasOpenDialog() || isRecordingHotkey() || blocked()) return;
+    if (closing.current || (source === "shortcut" && isComposing()) ||
+        hasOpenDialog() || isRecordingHotkey() || blocked()) return;
     const hide = () => {
       closing.current = true;
       composing.current = null;

@@ -7,6 +7,7 @@ use tauri::Url;
 
 pub(super) const ENDPOINT: &str = "https://api.github.com/repos/REXKEV214/dew-clip/releases/latest";
 pub(super) const RELEASES: &str = "https://github.com/REXKEV214/dew-clip/releases/";
+const MAX_RETRY_AFTER_SECS: u64 = 24 * 60 * 60;
 
 #[derive(Default)]
 pub(super) struct Response {
@@ -148,7 +149,9 @@ impl Response {
                 });
                 Err(Failure {
                     kind: CheckError::RateLimited,
-                    retry_after: reset.max(retry).map(Duration::from_secs),
+                    retry_after: reset
+                        .max(retry)
+                        .map(|seconds| Duration::from_secs(seconds.min(MAX_RETRY_AFTER_SECS))),
                     detail: "GitHub rate limit",
                 })
             }
@@ -360,6 +363,26 @@ mod tests {
         };
         assert_eq!(failure.kind, CheckError::RateLimited);
         assert_eq!(failure.retry_after, Some(Duration::from_secs(200)));
+    }
+
+    #[test]
+    fn caps_rate_limit_delays_from_either_header_at_one_day() {
+        for (reset, retry) in [
+            ("9223372036854775807", ""),
+            ("", "18446744073709551615"),
+            ("", "Sun, 04 Jan 1970 00:00:00 GMT"),
+        ] {
+            let response = Response {
+                status: 429,
+                rate_limit_reset: reset.into(),
+                retry_after: retry.into(),
+                ..Default::default()
+            };
+            let Err(failure) = response.interpret(RELEASES, 100_000) else {
+                panic!("expected rate limit");
+            };
+            assert_eq!(failure.retry_after, Some(Duration::from_secs(86_400)));
+        }
     }
 
     #[cfg(target_os = "macos")]

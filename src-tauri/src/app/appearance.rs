@@ -148,7 +148,7 @@ pub fn reapply(app: &AppHandle) -> AppResult<()> {
     Ok(())
 }
 
-/// Called on the main thread before a panel is ordered front and after system notifications.
+/// Refreshes the inherited theme on the main thread.
 pub fn refresh_system_theme(app: &AppHandle) {
     let preference = *app.state::<SettingsState>().appearance.lock().unwrap();
     if preference == AppearancePreference::System {
@@ -171,7 +171,7 @@ fn publish(app: &AppHandle, next: AppearanceState, reapply: bool) {
     }
     capsule::refresh_appearance(app, next.effective);
     if let Err(error) = app.emit("appearance-changed", next) {
-        eprintln!("[appearance] {error}");
+        crate::error!("[appearance] Could not publish appearance: {error}");
     }
 }
 
@@ -213,7 +213,7 @@ define_class!(
                 tokio::time::sleep(Duration::from_millis(40)).await;
                 let handle = app.clone();
                 if let Err(error) = app.run_on_main_thread(move || refresh_system_theme(&handle)) {
-                    eprintln!("[appearance] {error}");
+                    crate::error!("[appearance] Could not schedule appearance refresh: {error}");
                 }
             });
         }

@@ -24,6 +24,7 @@ const zh = {
   update_offline: "无法连接到 GitHub，请检查网络连接或系统代理设置。",
   update_timeout: "检查更新超时，请稍后重试或检查系统代理。",
   update_rate_limited: "GitHub 请求过于频繁，请稍后再试。",
+  update_retry_minute: "约 1 分钟后可重试。",
   update_retry_minutes: "约 {minutes} 分钟后可重试。",
   update_failed: "暂时无法获取更新信息，请稍后重试。",
   update_open_releases: "打开 Releases 页面",
@@ -110,8 +111,8 @@ const zh = {
   favorites_empty_tag: "这个标签下还没有内容",
   favorites_show_all: "查看全部",
   favorites_duplicate: "这条常用语已经保存过了",
-  pinned_esc_hint: "已固定，按 ESC 退出",
-  pinned_normal_hint: "已固定，可被其他窗口覆盖；快捷键可唤回",
+  pinned_esc_hint: "已固定，按 Esc 或 ⌘W 关闭",
+  pinned_normal_hint: "已固定，可被其他窗口覆盖。快捷键可唤回，按 Esc 或 ⌘W 关闭。",
 
   // Edit
   edit_title: "编辑",
@@ -503,6 +504,7 @@ const en: Record<TranslationKey, string> = {
   update_offline: "Couldn’t connect to GitHub. Check your internet connection or system proxy settings.",
   update_timeout: "The update check timed out. Try again later or check your system proxy.",
   update_rate_limited: "GitHub is limiting requests. Try again later.",
+  update_retry_minute: "Try again in about 1 minute.",
   update_retry_minutes: "Try again in about {minutes} minutes.",
   update_failed: "Couldn’t check for updates right now. Try again later.",
   update_open_releases: "Open Releases Page",
@@ -585,8 +587,8 @@ const en: Record<TranslationKey, string> = {
   favorites_empty_tag: "Nothing under this tag yet",
   favorites_show_all: "Show All",
   favorites_duplicate: "This phrase is already saved",
-  pinned_esc_hint: "Pinned. Press Esc to close",
-  pinned_normal_hint: "Pinned. Other windows can cover it; the shortcut brings it back",
+  pinned_esc_hint: "Pinned. Press Esc or ⌘W to close",
+  pinned_normal_hint: "Pinned. Other windows can cover it. Use the shortcut to bring it back, or press Esc or ⌘W to close.",
 
   edit_title: "Edit",
   edit_save_and_paste: "Save & Paste",

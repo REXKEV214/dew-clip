@@ -18,8 +18,6 @@ it("keeps every installed app available when macOS recommendations are unavailab
     ],
     t: (key: string) => key,
     onSelect: () => {},
-    theme: "",
-    colorMode: "light",
   };
   try {
     await act(async () => root.render(createElement(AppSelector, props)));

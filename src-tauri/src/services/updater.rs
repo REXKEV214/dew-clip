@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::watch;
 
 pub const ENABLED_KEY: &str = "app.update_check_enabled";
+pub const ONBOARDING_DONE_KEY: &str = "app.onboarding_done";
 const CHECKED_KEY: &str = "app.update_last_checked_at";
 const SKIPPED_KEY: &str = "app.update_skipped_version";
 const ETAG_KEY: &str = "app.update_etag";
@@ -150,16 +151,27 @@ struct Request {
 #[derive(Default)]
 struct UpdateProgress {
     cache: CachedCheck,
+    onboarding_done: bool,
     skipped: Option<Version>,
     dismissed: Option<Version>,
     failure: Option<Failure>,
-    failed_at: Option<Instant>,
+    failed_at_ms: Option<i64>,
     wake_until: Option<Instant>,
     in_flight: Option<CheckReceiver>,
     generation: u64,
 }
 
 impl UpdateProgress {
+    fn save_onboarding_done(
+        &mut self,
+        settings: &impl SettingsRepository,
+        value: &str,
+    ) -> AppResult<()> {
+        settings.set(ONBOARDING_DONE_KEY, value)?;
+        self.onboarding_done = value == "true";
+        Ok(())
+    }
+
     fn latest(&self, current: &Version) -> Option<&Release> {
         self.cache
             .release
@@ -214,17 +226,10 @@ impl UpdateProgress {
         if let Some(receiver) = &self.in_flight {
             return manual.then(|| (receiver.clone(), None));
         }
-        let backoff = self
-            .failure
-            .as_ref()
-            .and_then(|failure| failure.retry_after)
-            .unwrap_or_default()
-            .max(FAILURE_BACKOFF);
         if !manual
-            && (!self.cache.due(now_ms)
-                || self
-                    .failed_at
-                    .is_some_and(|failed_at| now.saturating_duration_since(failed_at) < backoff)
+            && (!self.onboarding_done
+                || self.backing_off(now_ms)
+                || !self.cache.due(now_ms)
                 || self.wake_until.is_some_and(|until| now < until))
         {
             return None;
@@ -239,6 +244,22 @@ impl UpdateProgress {
                 result,
             }),
         ))
+    }
+
+    fn backing_off(&mut self, now_ms: i64) -> bool {
+        let Some(failed_at) = &mut self.failed_at_ms else {
+            return false;
+        };
+        // Start a fresh delay on rollback instead of waiting for the old clock time.
+        *failed_at = (*failed_at).min(now_ms);
+        let elapsed = Duration::from_millis(now_ms.saturating_sub(*failed_at) as u64);
+        let backoff = self
+            .failure
+            .as_ref()
+            .and_then(|failure| failure.retry_after)
+            .unwrap_or_default()
+            .max(FAILURE_BACKOFF);
+        elapsed < backoff
     }
 
     fn finish(&mut self, result: Result<CheckResult, Failure>, now: i64, conn: &mut Connection) {
@@ -269,13 +290,13 @@ impl UpdateProgress {
             Ok(cache) => {
                 self.cache = cache;
                 self.failure = None;
-                self.failed_at = None;
+                self.failed_at_ms = None;
                 crate::info!("Update check completed");
             }
             Err(failure) => {
                 crate::error!("Update check: {}", failure.detail);
                 self.failure = Some(failure);
-                self.failed_at = Some(Instant::now());
+                self.failed_at_ms = Some(now);
             }
         }
     }
@@ -314,6 +335,8 @@ impl UpdateState {
             current,
             progress: Mutex::new(UpdateProgress {
                 cache: CachedCheck::load(conn)?,
+                onboarding_done: SqliteSettingsRepository::get_raw(conn, ONBOARDING_DONE_KEY)?
+                    .as_deref() == Some("true"),
                 skipped: version,
                 ..Default::default()
             }),
@@ -338,27 +361,14 @@ fn publish(app: &AppHandle, snapshot: &UpdateSnapshot) {
 fn begin(app: &AppHandle, manual: bool) -> Option<CheckReceiver> {
     let state = app.state::<UpdateState>();
     let mut progress = state.progress.lock().unwrap();
-    if !manual {
-        if cfg!(debug_assertions)
+    if !manual
+        && (cfg!(debug_assertions)
             || !app
                 .state::<SettingsState>()
                 .update_check_enabled
-                .load(Ordering::Relaxed)
-        {
-            return None;
-        }
-        match app
-            .state::<DbState>()
-            .settings_repo
-            .get("app.onboarding_done")
-        {
-            Ok(done) if done.as_deref() == Some("true") => {}
-            Ok(_) => return None,
-            Err(error) => {
-                crate::error!("Could not read onboarding status for update check: {error}");
-                return None;
-            }
-        }
+                .load(Ordering::Relaxed))
+    {
+        return None;
     }
     let (receiver, request) = progress.begin(manual, wall_clock_ms(), Instant::now())?;
     if let Some(request) = request {
@@ -431,6 +441,12 @@ pub fn set_enabled(app: &AppHandle, enabled: bool) -> AppResult<()> {
         begin(app, false);
     }
     Ok(())
+}
+
+pub fn set_onboarding_done(app: &AppHandle, value: &str) -> AppResult<()> {
+    let state = app.state::<UpdateState>();
+    let mut progress = state.progress.lock().unwrap();
+    progress.save_onboarding_done(&app.state::<DbState>().settings_repo, value)
 }
 
 pub fn check_after_wake(app: AppHandle) {
@@ -536,52 +552,96 @@ mod tests {
     }
 
     #[test]
-    fn due_checks_follow_the_wall_clock_and_back_off_after_failure() {
+    fn automatic_checks_wait_until_due_and_until_the_network_has_had_time_after_wake() {
         let checked_at = 100_000_000;
         let now = Instant::now();
         let mut progress = UpdateProgress {
+            onboarding_done: true,
             cache: CachedCheck {
                 checked_at: Some(checked_at),
                 ..Default::default()
             },
             ..Default::default()
         };
-        assert!(!progress.cache.due(checked_at + CHECK_INTERVAL_MS - 1));
-        assert!(progress.cache.due(checked_at + CHECK_INTERVAL_MS));
+        let due = checked_at + CHECK_INTERVAL_MS;
         assert!(progress.cache.due(checked_at - 1));
-        assert!(progress.begin(false, checked_at, now).is_none());
-        progress.failed_at = Some(now);
-        assert!(progress
-            .begin(
-                false,
-                checked_at - 1,
-                now + FAILURE_BACKOFF - Duration::from_secs(1)
-            )
-            .is_none());
-        progress.failure = Some(Failure {
-            kind: CheckError::RateLimited,
-            retry_after: Some(FAILURE_BACKOFF * 2),
-            detail: "GitHub rate limit",
-        });
-        assert!(progress
-            .begin(false, checked_at - 1, now + FAILURE_BACKOFF)
-            .is_none());
-        progress.wake_until = Some(now + FAILURE_BACKOFF * 2 + WAKE_DELAY);
-        assert!(progress
-            .begin(false, checked_at - 1, now + FAILURE_BACKOFF * 2)
-            .is_none());
-        assert!(progress
-            .begin(
-                false,
-                checked_at - 1,
-                now + FAILURE_BACKOFF * 2 + WAKE_DELAY
-            )
-            .is_some());
+        assert!(progress.begin(false, due - 1, now).is_none());
+        progress.wake_until = Some(now + WAKE_DELAY);
+        assert!(progress.begin(false, due, now).is_none());
+        assert!(progress.begin(false, due, now + WAKE_DELAY).is_some());
+    }
+
+    #[test]
+    fn failure_backoff_counts_wall_clock_time_even_when_monotonic_time_stands_still() {
+        let mut conn = settings_db();
+        let mut progress = UpdateProgress {
+            onboarding_done: true,
+            ..Default::default()
+        };
+        let now = Instant::now();
+        let failed_at = 100_000_000;
+        progress.finish(
+            Err(Failure::new(CheckError::Offline, "offline")),
+            failed_at,
+            &mut conn,
+        );
+        let due = failed_at + FAILURE_BACKOFF.as_millis() as i64;
+        assert!(progress.begin(false, due - 1, now).is_none());
+        assert!(progress.begin(false, due, now).is_some());
+    }
+
+    #[test]
+    fn rate_limit_backoff_starts_fresh_when_the_clock_moves_backwards() {
+        let mut conn = settings_db();
+        let mut progress = UpdateProgress {
+            onboarding_done: true,
+            ..Default::default()
+        };
+        let now = Instant::now();
+        let failed_at = 100_000_000;
+        let retry_after = FAILURE_BACKOFF * 2;
+        progress.finish(
+            Err(Failure {
+                kind: CheckError::RateLimited,
+                retry_after: Some(retry_after),
+                detail: "GitHub rate limit",
+            }),
+            failed_at,
+            &mut conn,
+        );
+        let rolled_back = failed_at - CHECK_INTERVAL_MS;
+        assert!(progress.begin(false, rolled_back, now).is_none());
+        let due = rolled_back + retry_after.as_millis() as i64;
+        assert!(progress.begin(false, due - 1, now).is_none());
+        assert!(progress.begin(false, due, now).is_some());
+    }
+
+    #[test]
+    fn automatic_checks_use_in_memory_onboarding_state_until_settings_change() {
+        let conn = std::sync::Arc::new(Mutex::new(settings_db()));
+        let settings = SqliteSettingsRepository::new(conn.clone());
+        let current = Version::new(1, 0, 0);
+        let state = UpdateState::load(current.clone(), &conn.lock().unwrap()).unwrap();
+        let mut progress = state.progress.into_inner().unwrap();
+        let now = Instant::now();
+        assert!(progress.begin(false, 1, now).is_none());
+
+        progress.save_onboarding_done(&settings, "true").unwrap();
+        let state = UpdateState::load(current, &conn.lock().unwrap()).unwrap();
+        assert!(state.progress.lock().unwrap().onboarding_done);
+        let mut conn = conn.lock().unwrap();
+        assert!(progress.begin(false, 1, now).is_some());
+        progress.reset(&mut conn).unwrap();
+        progress.in_flight = None;
+        assert!(progress.begin(false, 2, now).is_none());
     }
 
     #[test]
     fn concurrent_manual_checks_join_the_same_in_flight_auto_check() {
-        let mut progress = UpdateProgress::default();
+        let mut progress = UpdateProgress {
+            onboarding_done: true,
+            ..Default::default()
+        };
         let now = Instant::now();
         let (automatic, request) = progress.begin(false, 1, now).unwrap();
         let request = request.unwrap();

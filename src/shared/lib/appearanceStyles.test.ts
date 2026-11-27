@@ -45,9 +45,9 @@ it("recolors release surfaces and shared controls when the window appearance cha
   const pause = addElement("recording-pause-banner");
   const shortcut = addElement("card-shortcut");
   const queueNext = addElement("queue-next");
-  const favoriteSearch = addElement("expandable-search");
+  const favoriteSearch = addElement("favorite-search");
   const favoriteActions = addElement("favorite-actions");
-  const storageAndIgnoredApps = addElement("setting-row");
+  const storageAndIgnoredApps = addElement("setting-details");
   const pickedAppearance = addElement("segment is-active");
   const appPicker = addElement("modal-panel-app-selector");
   const toast = addElement("toast glass-popover");
@@ -60,7 +60,7 @@ it("recolors release surfaces and shared controls when the window appearance cha
     getComputedStyle(queueNext).color,
     getComputedStyle(favoriteSearch).backgroundColor,
     getComputedStyle(favoriteActions).backgroundColor,
-    getComputedStyle(storageAndIgnoredApps).borderBottomColor,
+    getComputedStyle(storageAndIgnoredApps).borderTopColor,
     getComputedStyle(pickedAppearance).backgroundColor,
     getComputedStyle(appPicker).backgroundColor,
     getComputedStyle(toast).backgroundColor,
@@ -77,6 +77,40 @@ it("recolors release surfaces and shared controls when the window appearance cha
   expect(getComputedStyle(queueNext).color).toBe(ACCENTS.purple.darkInk);
   applyEffectiveTheme("light");
   expect(colors()).toEqual(light);
+});
+
+it("uses the matching theme colors for the close button and update notices", () => {
+  loadStyles("../../styles/glass.css");
+  const close = addElement("window-close");
+  const dot = addElement("settings-update-dot", addElement("settings-button"));
+  const banner = addElement("update-banner");
+  const bannerLink = addElement("link-button", banner);
+  const dialog = addElement("modal-panel glass-popover update-dialog");
+  const notes = addElement("update-notes", dialog);
+  const reminder = addElement("update-install-reminder", dialog);
+  applyAccent("purple");
+
+  const surfaces = () => [
+    getComputedStyle(close).color,
+    getComputedStyle(close).backgroundColor,
+    getComputedStyle(banner).color,
+    getComputedStyle(banner).backgroundColor,
+    getComputedStyle(dialog).backgroundColor,
+    getComputedStyle(notes).color,
+    getComputedStyle(reminder).backgroundColor,
+  ];
+  applyEffectiveTheme("light");
+  const light = surfaces();
+  expect(getComputedStyle(dot).backgroundColor).toBe(ACCENTS.purple.base);
+  expect(getComputedStyle(bannerLink).color).toBe(ACCENTS.purple.strong);
+
+  applyEffectiveTheme("dark");
+  surfaces().forEach((color, index) => {
+    expect(color).toBeTruthy();
+    expect(color).not.toBe(light[index]);
+  });
+  expect(getComputedStyle(dot).backgroundColor).toBe(ACCENTS.purple.darkInk);
+  expect(getComputedStyle(bannerLink).color).toBe(ACCENTS.purple.darkInk);
 });
 
 it("changes glass capsule ink while both black styles keep the same colors", () => {

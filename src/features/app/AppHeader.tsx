@@ -18,7 +18,7 @@ interface AppHeaderProps {
   onToggleSequential: () => void;
   onTogglePinned: () => void;
   onSelectPinMode: (mode: WindowPinMode) => void;
-  onCloseWindow: () => void;
+  onCloseWindow: (source: "button") => void;
   onClearHistory: () => void;
   onOpenSettings: () => void;
 }
@@ -67,7 +67,7 @@ const AppHeader = ({
       onClick={(event) => {
         event.stopPropagation();
         event.currentTarget.blur();
-        onCloseWindow();
+        onCloseWindow("button");
       }}
     >
       <X size={14} strokeWidth={2.2} aria-hidden="true" />

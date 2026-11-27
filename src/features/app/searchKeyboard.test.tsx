@@ -6,6 +6,7 @@ import { translations, type TranslationKey } from "../../locales";
 import { installBrowserAcceleratorBlocker } from "../../shared/lib/blockBrowserAccelerators";
 import type { ClipboardEntry, Locale } from "../../shared/types";
 import ClipboardCard from "../clipboard/ClipboardCard";
+import AppHeader from "./AppHeader";
 import SearchBox, { type SearchBoxHandle } from "./SearchBox";
 import { useKeyboard } from "./useKeyboard";
 import { useHistorySelection } from "./useHistorySelection";
@@ -92,6 +93,11 @@ const Harness = ({
   });
   return (
     <>
+      <AppHeader t={t} showSettings={false} isWindowPinned={false} pinMode="normal"
+        favoritesOpen={false} sequentialActive={false} sequentialCount={0} sequentialHotkey=""
+        onBack={noAction} onToggleFavorites={noAction} onToggleSequential={noAction} onTogglePinned={noAction}
+        onSelectPinMode={noAction} onCloseWindow={windowClose.requestCloseWindow} onClearHistory={noAction}
+        onOpenSettings={noAction} />
       <SearchBox
         ref={field}
         t={(key) => translations[language][key as TranslationKey]}
@@ -214,6 +220,36 @@ describe("the WebView keyboard listeners", () => {
     recorder.remove();
     expect(key("w", { metaKey: true }, input()).defaultPrevented).toBe(true);
     expect(used).toEqual(["recorded", "window hidden"]);
+  });
+
+  test.each([
+    { unsaved: false, action: "with no edits" },
+    { unsaved: true, action: "after confirming discard" },
+  ])("a header click closes during composition $action", async ({ unsaved }) => {
+    mount({ unsaved });
+    const editor = host.querySelector("textarea")!;
+    act(() => {
+      editor.focus();
+      editor.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    });
+    expect(key("w", { metaKey: true }, editor).defaultPrevented).toBe(false);
+    expect(used).toEqual([]);
+
+    const close = host.querySelector<HTMLButtonElement>(".window-close")!;
+    act(() => {
+      close.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      close.click();
+    });
+    if (unsaved) {
+      expect(used).toEqual([]);
+      const dialog = document.querySelector('[aria-modal="true"]')!;
+      const discard = [...dialog.querySelectorAll("button")].find((button) => button.textContent === "Discard and Close")!;
+      await act(async () => discard.click());
+    } else {
+      expect(document.activeElement).not.toBe(editor);
+    }
+    expect(used).toEqual(["window hidden"]);
+    expect(document.querySelector('[aria-modal="true"]')).toBeNull();
   });
 
   test("discard confirmation starts on Cancel, preserves focus on cancel and hides on confirm", async () => {

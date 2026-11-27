@@ -26,6 +26,9 @@ pub fn save_setting(
     if key == updater::ENABLED_KEY {
         return updater::set_enabled(&app_handle, value == "true");
     }
+    if key == updater::ONBOARDING_DONE_KEY {
+        return updater::set_onboarding_done(&app_handle, &value);
+    }
     let atomic_setting = match key.as_str() {
         "app.history_retention_days" => Some((&settings_state.history_retention_days, value.parse().unwrap_or(0))),
         "app.storage_limit_mb" => Some((&settings_state.storage_limit_mb, value.parse().unwrap_or(0))),

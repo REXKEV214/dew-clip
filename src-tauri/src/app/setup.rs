@@ -27,6 +27,12 @@ fn register_macos_wake_handler(app_handle: AppHandle) {
 
     let center = NSWorkspace::sharedWorkspace().notificationCenter();
     let wake_handler = RcBlock::new(move |_notification: NonNull<NSNotification>| {
+        let appearance_handle = app_handle.clone();
+        if let Err(error) = app_handle.run_on_main_thread(move || {
+            appearance::refresh_system_theme(&appearance_handle);
+        }) {
+            crate::error!("[appearance] Could not schedule appearance refresh after wake: {error}");
+        }
         crate::services::recording_pause::check_expired_pause(&app_handle);
         updater::check_after_wake(app_handle.clone());
         tauri::async_runtime::spawn(crate::services::paste_queue::check_idle_after_wake(app_handle.clone()));
@@ -87,8 +93,6 @@ fn register_macos_pinned_escape_monitor(app_handle: AppHandle) {
 pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
 
-    #[cfg(target_os = "macos")]
-    register_macos_wake_handler(app_handle.clone());
     #[cfg(target_os = "macos")]
     register_macos_pinned_escape_monitor(app_handle.clone());
     #[cfg(target_os = "macos")]
@@ -173,6 +177,8 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
     // 9. Tray Setup
     crate::app::tray::setup_tray(app, settings.hide_tray_icon)?;
+    #[cfg(target_os = "macos")]
+    register_macos_wake_handler(app_handle.clone());
     updater::start_scheduler(app_handle, settings.first_open);
 
     Ok(())
@@ -320,7 +326,7 @@ pub(crate) fn load_settings(repo: &SqliteSettingsRepository) -> rusqlite::Result
         window_width: size("app.window_logical_width"),
         window_height: size("app.window_logical_height"),
         main_hotkey: get("app.hotkey", "Alt+Z"),
-        first_open: !flag("app.onboarding_done", false),
+        first_open: !flag(updater::ONBOARDING_DONE_KEY, false),
         window_position_mode: crate::app::window_manager::normalize_position_mode(&get(
             "app.window_position_mode",
             "follow_mouse",

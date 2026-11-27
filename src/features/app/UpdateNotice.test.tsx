@@ -104,6 +104,8 @@ test.each(["en", "zh"] as const)("settings show manual results and the backend v
     expect(button(t("update_open_releases"))).toBeDefined();
     if (errorKind === "rate_limited") expect(host.textContent).toContain(t("update_retry_minutes").replace("{minutes}", "2"));
   }
+  render({ ...status, status: "error", errorKind: "rate_limited", retryAfterSecs: 60 });
+  expect(host.textContent).toContain(language === "en" ? "Try again in about 1 minute." : "约 1 分钟后可重试。");
   render("failed");
   expect(host.textContent).toContain(t("update_failed"));
 });
