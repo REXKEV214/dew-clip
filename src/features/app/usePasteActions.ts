@@ -11,9 +11,20 @@ export type PasteFormat = "original" | "plain" | "markdown";
 /** Thrown when an entry's full text can't be read: the list only has a shortened copy. */
 export const CONTENT_UNAVAILABLE = "content_unavailable";
 
+const copyContentMessage = (error: unknown): string | null => {
+  const text = String(error);
+  if (text.includes("file_missing")) return "file_missing";
+  if (text.includes(CONTENT_UNAVAILABLE)) return "content_load_failed";
+  return null;
+};
+
+export const copyOnlyFailureMessage = (error: unknown, t: Translate) => {
+  const message = copyContentMessage(error);
+  return message ? t(message) : t("copy_only_failed") + String(error);
+};
+
 /** Error codes from a paste that stopped before anything was deleted, and their messages. */
 const STOPPED_PASTE_MESSAGES: Record<string, string> = {
-  [CONTENT_UNAVAILABLE]: "content_load_failed",
   paste_target_unavailable: "paste_target_unavailable",
   paste_keystroke_failed: "paste_keystroke_failed",
   clipboard_snapshot_failed: "clipboard_snapshot_failed",
@@ -23,7 +34,7 @@ const STOPPED_PASTE_MESSAGES: Record<string, string> = {
 export const stoppedPasteMessage = (error: unknown): string | null => {
   const text = String(error);
   const code = Object.keys(STOPPED_PASTE_MESSAGES).find((key) => text.includes(key));
-  return code ? STOPPED_PASTE_MESSAGES[code] : null;
+  return copyContentMessage(text) ?? (code ? STOPPED_PASTE_MESSAGES[code] : null);
 };
 
 interface PasteOptions {
@@ -42,9 +53,8 @@ export const usePasteActions = ({ t, pushToast, deleteAfterPaste, moveToTopAfter
       // The backend event opens the permission prompt.
       if (text.includes("accessibility_permission_required")) return;
       if (text.includes("ocr_no_text")) return pushToast(t("ocr_no_text"));
-      if (text.includes("file_missing")) return pushToast(t("file_missing"));
       const stopped = stoppedPasteMessage(text);
-      if (stopped) return pushToast(t(stopped), 3000);
+      if (stopped) return pushToast(t(stopped), stopped === "file_missing" ? undefined : 3000);
       pushToast(t("copy_failed") + text, 3000);
     },
     [pushToast, t]
@@ -109,7 +119,7 @@ export const usePasteActions = ({ t, pushToast, deleteAfterPaste, moveToTopAfter
         });
         pushToast(t("copied_to_clipboard"), 3000);
       } catch (error) {
-        pushToast(t("copy_only_failed") + String(error), 3000);
+        pushToast(copyOnlyFailureMessage(error, t), 3000);
       }
     },
     [pushToast, t]

@@ -31,6 +31,35 @@ const search: KeyContext = { ...list, inField: true, inSearch: true };
 
 const type = (input: KeyInput, ctx: KeyContext) => resolveKey(input, ctx).type;
 
+describe("Command+W", () => {
+  test("closes in one step from the list, active search, each side panel and settings", () => {
+    const contexts = [
+      list, { ...list, selectedIndex: null }, { ...search, searchPending: true },
+      { ...list, blocked: true, listKeys: false }, batch,
+      ...(["edit", "translate", "preview", "favorites", "queue"] as const).map((panel) => ({ ...list, panel })),
+    ];
+    for (const context of contexts) {
+      expect(type(cmd("w"), context)).toBe("closeWindow");
+      expect(type(cmd("W"), context)).toBe("closeWindow");
+    }
+  });
+
+  test("requires Command alone and handles IME, dialogs, recording and positioning", () => {
+    for (const mods of [
+      { ctrlKey: true }, { altKey: true }, { metaKey: true, shiftKey: true },
+      { metaKey: true, altKey: true }, { metaKey: true, ctrlKey: true },
+    ]) {
+      expect(type(key("w", mods), list)).toBe("ignore");
+    }
+    expect(type({ ...cmd("w"), repeat: true }, list)).toBe("consume");
+    expect(type(cmd("w"), { ...list, dialogOpen: true })).toBe("consume");
+    expect(type(cmd("w"), { ...list, settingFixedPosition: true })).toBe("consume");
+    expect(type(cmd("w"), { ...list, recordingHotkey: true })).toBe("ignore");
+    expect(type({ ...cmd("w"), isComposing: true }, { ...list, dialogOpen: true })).toBe("ignore");
+    expect(type(cmd("Process"), list)).toBe("ignore");
+  });
+});
+
 describe("Cmd+A", () => {
   test("on the list: batch mode with everything ticked", () => {
     expect(type(cmd("a"), list)).toBe("startBatchSelectAll");

@@ -10,3 +10,4 @@ pub mod recording_pause;
 pub mod sensitive_align;
 pub mod storage_manager;
 pub mod translate;
+pub mod updater;

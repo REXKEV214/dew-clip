@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ClipboardEntry, Translate } from "../../shared/types";
 import { entryKey } from "../../shared/lib/clipboardTypes";
 import { startWindowDrag } from "../../shared/lib/windowDrag";
+import type { UnsavedChangesHandle } from "../app/useWindowClose";
 
 interface EditPanelProps {
+  ref?: Ref<UnsavedChangesHandle>;
   t: Translate;
   entry: ClipboardEntry;
   deleteAfterPaste: boolean;
@@ -14,8 +16,12 @@ interface EditPanelProps {
   onClose: () => void;
 }
 
+export const hasEditedClipboardText = (text: string | null, initialText: string | null) =>
+  text !== null && text !== initialText;
+
 /** Rich text is edited as plain text; 另存为 keeps the formatted original. */
 const EditPanel = ({
+  ref,
   t,
   entry,
   deleteAfterPaste,
@@ -25,6 +31,10 @@ const EditPanel = ({
   onClose,
 }: EditPanelProps) => {
   const [text, setText] = useState<string | null>(null);
+  const initialText = useRef<string | null>(null);
+  useImperativeHandle(ref, () => ({
+    hasUnsavedChanges: () => hasEditedClipboardText(text, initialText.current),
+  }));
   const { id, createdAt } = entryKey(entry);
 
   const closeRef = useRef(onClose);
@@ -40,7 +50,10 @@ const EditPanel = ({
     // there is nothing to edit: saving the copy would cut the entry short.
     invoke<string>("get_clipboard_content", { id, createdAt })
       .then((full) => {
-        if (alive) setText(full);
+        if (alive) {
+          initialText.current = full;
+          setText(full);
+        }
       })
       .catch((error) => {
         if (!alive) return;

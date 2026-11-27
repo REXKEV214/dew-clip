@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowDown } from "lucide-react";
 import type { ClipboardEntry, Translate } from "../../shared/types";
@@ -7,8 +7,10 @@ import { startWindowDrag } from "../../shared/lib/windowDrag";
 import { withNativeDialog } from "../../shared/lib/focus";
 import { translationErrorMessage, type TranslationConfig } from "./config";
 import { detectDirection, type TranslateDirection, type TranslateLanguage } from "./direction";
+import type { UnsavedChangesHandle } from "../app/useWindowClose";
 
 interface TranslatePanelProps {
+  ref?: Ref<UnsavedChangesHandle>;
   t: Translate;
   entry: ClipboardEntry;
   config: TranslationConfig;
@@ -25,8 +27,13 @@ const languageName = (t: Translate, language: TranslateLanguage) =>
 export const loadTranslationSource = (id: number, createdAt: number) =>
   invoke<string>("get_clipboard_content", { id, createdAt });
 
+export const hasEditedTranslation = (source: string | null, initialSource: string | null,
+  result: string, translated: string, busy: boolean) =>
+  (source !== null && source !== initialSource) || (!busy && result !== translated);
+
 /** 翻译: 原文 above, 译文 below, both editable. Chinese ↔ English only. */
 const TranslatePanel = ({
+  ref,
   t,
   entry,
   config,
@@ -42,6 +49,12 @@ const TranslatePanel = ({
   const [direction, setDirection] = useState<TranslateDirection | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const initialSource = useRef<string | null>(null);
+  const lastTranslatedResult = useRef("");
+  useImperativeHandle(ref, () => ({
+    hasUnsavedChanges: () =>
+      hasEditedTranslation(source, initialSource.current, result, lastTranslatedResult.current, busy),
+  }));
   // Only the latest request may fill in 译文.
   const requestRef = useRef(0);
   const { provider, openaiModel } = config;
@@ -62,9 +75,13 @@ const TranslatePanel = ({
         const needsDownload = provider === "apple"
           && await invoke<string>("translation_status", { ...next }) === "download";
         const translated = needsDownload ? await withNativeDialog(translate, "translate") : await translate();
-        if (request === requestRef.current) setResult(translated);
+        if (request === requestRef.current) {
+          lastTranslatedResult.current = translated;
+          setResult(translated);
+        }
       } catch (failure) {
         if (request === requestRef.current) {
+          lastTranslatedResult.current = "";
           setResult("");
           setError(translationErrorMessage(t, failure));
         }
@@ -85,6 +102,7 @@ const TranslatePanel = ({
     loadTranslationSource(id, createdAt)
       .then((full) => {
         if (!alive) return;
+        initialSource.current = full;
         setSource(full);
         void runOnOpen.current(full);
       })

@@ -11,6 +11,10 @@ import { useKeyboard } from "./useKeyboard";
 import { useHistorySelection } from "./useHistorySelection";
 import { useLiveSearch } from "../../shared/hooks/useLiveSearch";
 import { useShortcutBadges } from "./useShortcutBadges";
+import { useWindowClose } from "./useWindowClose";
+import { useOverlays } from "./useOverlays";
+import { ConfirmDialog } from "../../shared/components/Overlays";
+import { useSpacePreview } from "../preview/useSpacePreview";
 
 const items: ClipboardEntry[] = [
   { id: 1, content_type: "text", content: "First", source_app: "Notes", timestamp: 1, preview: "", is_pinned: false },
@@ -24,7 +28,13 @@ let used: string[];
 
 const Harness = ({
   blocked = false, batch = false, settled = true, language = "en", rows = items,
-}: { blocked?: boolean; batch?: boolean; settled?: boolean; language?: Locale; rows?: ClipboardEntry[] }) => {
+  unsaved = false, closingBlocked = false,
+}: {
+  blocked?: boolean; batch?: boolean; settled?: boolean; language?: Locale; rows?: ClipboardEntry[];
+  unsaved?: boolean; closingBlocked?: boolean;
+}) => {
+  const t = (key: string) => translations[language][key as TranslationKey];
+  const { confirmDialog, closeConfirm, openConfirm } = useOverlays(t);
   const search = useLiveSearch(150);
   const field = useRef<SearchBoxHandle>(null);
   const pending = search.draft.trim() !== search.search || !settled;
@@ -36,6 +46,22 @@ const Harness = ({
     search.clear();
     clearSelection();
   };
+  const cancelPreview = useSpacePreview({
+    enabled: true,
+    items: rows,
+    selectedIndex,
+    onOpen: () => used.push("preview opened"),
+    onClose: () => used.push("panel restored"),
+  });
+  const windowClose = useWindowClose({
+    t, openConfirm, closeConfirm,
+    blocked: () => closingBlocked,
+    hasUnsavedChanges: () => unsaved,
+    hideWindow: async () => {
+      cancelPreview.current();
+      used.push("window hidden");
+    },
+  });
   useKeyboard({
     items: rows,
     enabled: !batch && !blocked,
@@ -51,6 +77,7 @@ const Harness = ({
     searchPending: pending,
     flushSearch: () => search.flush(search.draft),
     isSearchComposing: search.isComposing,
+    ...windowClose,
     dismiss: () => {
       clear();
       return true;
@@ -78,6 +105,9 @@ const Harness = ({
       />
       <output data-badges={badges} data-selected={selectedIndex ?? undefined}>{search.search}</output>
       <p>Preview text</p>
+      <textarea aria-label="Editor" />
+      <ConfirmDialog state={confirmDialog} confirmLabel={confirmDialog.confirmLabel ?? t("confirm")}
+        cancelLabel={t("cancel")} onClose={closeConfirm} />
     </>
   );
 };
@@ -150,6 +180,82 @@ describe("the WebView keyboard listeners", () => {
     expect(document.activeElement).not.toBe(input());
   });
 
+  test("Command+W reaches the close entry through the capture listeners and ignores repeat", () => {
+    mount({ blocked: true });
+    act(() => input().focus());
+    expect(key("W", { metaKey: true, repeat: true }, input()).defaultPrevented).toBe(true);
+    expect(used).toEqual([]);
+    expect(key("W", { metaKey: true }, input()).defaultPrevented).toBe(true);
+    expect(used).toEqual(["window hidden"]);
+    expect(document.activeElement).not.toBe(input());
+  });
+
+  test("Command+W leaves composing in the search or another editor and hotkey recording alone", () => {
+    mount();
+    for (const field of [input(), host.querySelector("textarea")!]) {
+      act(() => {
+        field.focus();
+        field.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      });
+      expect(key("w", { metaKey: true }, field).defaultPrevented).toBe(false);
+      expect(used).toEqual([]);
+      act(() => field.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true })));
+    }
+    const legacyComposition = new KeyboardEvent("keydown", { key: "w", metaKey: true, bubbles: true, cancelable: true });
+    Object.defineProperty(legacyComposition, "keyCode", { value: 229 });
+    act(() => input().dispatchEvent(legacyComposition));
+    expect(legacyComposition.defaultPrevented).toBe(false);
+    const recorder = document.createElement("button");
+    recorder.dataset.hotkeyRecording = "true";
+    recorder.addEventListener("keydown", () => used.push("recorded"));
+    host.append(recorder);
+    expect(key("w", { metaKey: true }, recorder).defaultPrevented).toBe(false);
+    expect(used).toEqual(["recorded"]);
+    recorder.remove();
+    expect(key("w", { metaKey: true }, input()).defaultPrevented).toBe(true);
+    expect(used).toEqual(["recorded", "window hidden"]);
+  });
+
+  test("discard confirmation starts on Cancel, preserves focus on cancel and hides on confirm", async () => {
+    mount({ unsaved: true });
+    const editor = host.querySelector("textarea")!;
+    act(() => editor.focus());
+    expect(key("w", { metaKey: true }, editor).defaultPrevented).toBe(true);
+    const dialog = () => document.body.querySelector<HTMLElement>('[aria-modal="true"]');
+    expect(dialog()?.getAttribute("aria-label")).toBe("Discard unsaved changes?");
+    const button = (label: string) => [...dialog()!.querySelectorAll("button")].find((item) => item.textContent === label)!;
+    advance(32);
+    expect(document.activeElement).toBe(button("Cancel"));
+    expect(key("w", { metaKey: true }, button("Cancel")).defaultPrevented).toBe(true);
+    expect(used).toEqual([]);
+    act(() => button("Cancel").click());
+    expect(dialog()).toBeNull();
+    expect(document.activeElement).toBe(editor);
+    key("w", { metaKey: true }, editor);
+    await act(async () => button("Discard and Close").click());
+    expect(used).toEqual(["window hidden"]);
+    expect(dialog()).toBeNull();
+  });
+
+  test("in-flight work consumes Command+W without confirming or hiding", () => {
+    mount({ closingBlocked: true, unsaved: true });
+    expect(key("w", { metaKey: true }).defaultPrevented).toBe(true);
+    expect(document.querySelector('[aria-modal="true"]')).toBeNull();
+    expect(used).toEqual([]);
+  });
+
+  test("closing while Space is held disarms preview before blur can restore another panel", () => {
+    mount();
+    key("ArrowDown");
+    key(" ", { code: "Space" });
+    advance(250);
+    expect(used).toEqual(["preview opened"]);
+    key("w", { metaKey: true });
+    act(() => window.dispatchEvent(new Event("blur")));
+    key(" ", { code: "Space" }, window, "keyup");
+    expect(used).toEqual(["preview opened", "window hidden"]);
+  });
+
   test("a pending search flushes once then stays safe until the results arrive", () => {
     mount();
     edit("new");
@@ -202,6 +308,34 @@ describe("the WebView keyboard listeners", () => {
     expect(key("c", { metaKey: true }, preview).defaultPrevented).toBe(false);
     expect(used).toEqual([]);
   });
+});
+
+test("badges stay hidden outside the main search and disappear when a dialog opens", async () => {
+  mount();
+  const editor = host.querySelector("textarea")!;
+  act(() => editor.focus());
+  key("Meta", { metaKey: true }, editor);
+  advance(300);
+  expect(badges()).toBe(false);
+  act(() => input().focus());
+  key("Meta", { metaKey: true }, input());
+  advance(300);
+  expect(badges()).toBe(true);
+  act(() => editor.focus());
+  expect(badges()).toBe(false);
+  act(() => input().focus());
+  key("Meta", { metaKey: true }, input());
+  advance(300);
+  const dialog = document.createElement("div");
+  dialog.setAttribute("aria-modal", "true");
+  await act(async () => {
+    host.append(dialog);
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(badges()).toBe(false);
+  key("Meta", { metaKey: true }, input());
+  advance(300);
+  expect(badges()).toBe(false);
 });
 
 describe("live search", () => {

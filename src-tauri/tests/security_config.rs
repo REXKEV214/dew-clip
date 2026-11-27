@@ -62,7 +62,6 @@ fn window_capabilities_allow_https_links_and_no_filesystem_plugin_commands() {
     assert_eq!(
         opener_permissions,
         [
-            serde_json::json!("opener:allow-reveal-item-in-dir"),
             serde_json::json!({
                 "identifier": "opener:allow-open-url",
                 "allow": [{ "url": "https://**" }]

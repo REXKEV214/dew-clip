@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { translations, type TranslationKey } from "../../locales";
-import { CONTENT_UNAVAILABLE, stoppedPasteMessage } from "./usePasteActions";
+import { CONTENT_UNAVAILABLE, copyOnlyFailureMessage, stoppedPasteMessage } from "./usePasteActions";
 
 test("a paste stopped before anything was deleted says why", () => {
   expect(stoppedPasteMessage(new Error(`${CONTENT_UNAVAILABLE}: [internal] decrypt failed`))).toBe(
@@ -11,6 +11,15 @@ test("a paste stopped before anything was deleted says why", () => {
   expect(stoppedPasteMessage("[validation] clipboard_snapshot_failed")).toBe("clipboard_snapshot_failed");
   expect(stoppedPasteMessage("[validation] clipboard_changed_during_paste")).toBe("clipboard_changed_during_paste");
   expect(stoppedPasteMessage("[io] disk full")).toBeNull();
+});
+
+test("copy-only failures reuse the localized missing file and content messages", () => {
+  for (const language of ["zh", "en"] as const) {
+    const t = (key: string) => translations[language][key as TranslationKey];
+    expect(copyOnlyFailureMessage("[io] file_missing", t)).toBe(t("file_missing"));
+    expect(copyOnlyFailureMessage(new Error(CONTENT_UNAVAILABLE), t)).toBe(t("content_load_failed"));
+    expect(copyOnlyFailureMessage("disk full", t)).toBe(t("copy_only_failed") + "disk full");
+  }
 });
 
 test("clipboard errors use shared messages for batch and sequential paste", () => {

@@ -21,6 +21,7 @@ interface BatchPanelProps {
   /** The list has pages not loaded yet (for 「（已加载）」). */
   hasMore: boolean;
   deleting: boolean;
+  onPastingChange?: (pasting: boolean) => void;
   onToggleSelectAll: () => void;
   onDeleteSelected: () => void;
   onReorder: (items: ClipboardEntry[]) => void;
@@ -119,6 +120,7 @@ const BatchPanel = ({
   canSelectAll,
   hasMore,
   deleting,
+  onPastingChange,
   onToggleSelectAll,
   onDeleteSelected,
   onReorder,
@@ -160,6 +162,7 @@ const BatchPanel = ({
   };
 
   const paste = async () => {
+    onPastingChange?.(true);
     setPasting(true);
     try {
       // The list holds a shortened copy of long entries: without every full
@@ -185,6 +188,7 @@ const BatchPanel = ({
     } catch (error) {
       onPasteFailed(error);
     } finally {
+      onPastingChange?.(false);
       setPasting(false);
     }
   };
@@ -192,12 +196,14 @@ const BatchPanel = ({
   const countText = selectionCountText(t, items.length, hasMore, allVisibleSelected);
   const busy = pasting || deleting;
   const startSequential = async () => {
+    onPastingChange?.(true);
     setPasting(true);
     try {
       await onStartSequential(localOrder.map(entryKey));
     } catch (error) {
       onPasteFailed(error);
     } finally {
+      onPastingChange?.(false);
       setPasting(false);
     }
   };

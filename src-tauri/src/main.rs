@@ -35,7 +35,10 @@ fn main() -> AppResult<()> {
         );
 
     #[cfg(target_os = "macos")]
-    let builder = builder.plugin(tauri_nspanel::init());
+    let builder = builder
+        .plugin(tauri_nspanel::init())
+        .menu(setup::application_menu)
+        .on_menu_event(setup::handle_application_menu);
 
     let app = builder
         // Launching the app again brings the running instance forward: the way
@@ -116,6 +119,10 @@ fn main() -> AppResult<()> {
             services::recording_pause::get_recording_pause_state,
             services::recording_pause::pause_recording,
             services::recording_pause::resume_recording,
+            services::updater::get_update_state,
+            services::updater::check_for_updates_now,
+            services::updater::skip_update_version,
+            services::updater::dismiss_update_banner,
             app::commands::save_setting,
             app::commands::acquire_blur_guard,
             app::commands::release_blur_guard,

@@ -609,7 +609,7 @@ fn hide_window(app_handle: AppHandle, restore_focus: bool) -> Result<(), String>
     Ok(())
 }
 
-/// Red button and native close request share the current pin policy.
+/// Hide the panel according to the current pin policy.
 #[tauri::command]
 pub fn hide_window_cmd(app_handle: AppHandle) -> Result<(), String> {
     if WINDOW_PINNED.load(Ordering::Relaxed) {
@@ -622,7 +622,7 @@ pub fn hide_window_cmd(app_handle: AppHandle) -> Result<(), String> {
     hide_window(app_handle, true)
 }
 
-/// Esc: the one way out of a pinned window. Unpins, then closes.
+/// Explicit close: unpins, then hides the panel.
 #[tauri::command]
 pub fn escape_window_cmd(app_handle: AppHandle) -> Result<(), String> {
     if WINDOW_PINNED.load(Ordering::Relaxed) {

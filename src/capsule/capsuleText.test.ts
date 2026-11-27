@@ -67,6 +67,7 @@ describe("capsule text", () => {
 
   it("omits the success check on failed and skipped pastes", () => {
     expect(capsuleShowsCheck({ sequential: { kind: "failed", reason: "paste" } })).toBe(false);
+    expect(capsuleShowsCheck({ sequential: { kind: "empty" } })).toBe(false);
     expect(capsuleShowsCheck({ sequential: { kind: "skipped", remaining: 1, hotkey: null, roundEnded: false } })).toBe(false);
     expect(capsuleShowsCheck({ sequential: { kind: "pasted", current: 1, total: 2 } })).toBe(true);
     expect(capsuleShowsCheck({})).toBe(true);

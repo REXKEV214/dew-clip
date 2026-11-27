@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, KeyboardEvent, WheelEvent } from "react";
+import type { ChangeEvent, KeyboardEvent, Ref, WheelEvent } from "react";
 import { Reorder, useDragControls } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -11,6 +11,7 @@ import { useLiveSearch } from "../../shared/hooks/useLiveSearch";
 import { isTauriRuntime } from "../../shared/lib/tauriRuntime";
 import { startWindowDrag } from "../../shared/lib/windowDrag";
 import { HighlightedParts } from "../clipboard/HighlightedParts";
+import type { UnsavedChangesHandle } from "../app/useWindowClose";
 import { fileName, findMatchedFilePath, hasMatch, matchedExcerpt, splitMatches } from "../clipboard/searchHighlight";
 import { FAVORITE_TABS, inTab, matchesVisible, mergeOrder, type FavoriteTab } from "./favoriteList";
 import {
@@ -31,7 +32,8 @@ interface FavoritesPanelProps {
   onEditingChange?: (editing: boolean) => void;
 }
 
-export interface FavoritesPanelHandle {
+export interface FavoritesPanelHandle extends UnsavedChangesHandle {
+  isSaving: () => boolean;
   focusSearchIfWithin: () => boolean;
   isSearchComposing: () => boolean;
   /** Esc: close the editor or clear the search before closing the panel. */
@@ -130,6 +132,7 @@ const FavoriteEditorPreview = ({ item, t }: { item: FavoriteItem; t: Translate }
 
 /** Add or edit a favorite in place: title, tags and, for text, the text. */
 const FavoriteEditor = ({
+  ref,
   t,
   mode,
   item,
@@ -143,6 +146,7 @@ const FavoriteEditor = ({
   onSave,
   onCancel,
 }: {
+  ref?: Ref<UnsavedChangesHandle>;
   t: Translate;
   mode: EditorMode;
   item?: FavoriteItem;
@@ -160,6 +164,15 @@ const FavoriteEditor = ({
   const [tags, setTags] = useState(initialTags);
   const [tagDraft, setTagDraft] = useState("");
   const [text, setText] = useState(initialText);
+  const initial = useRef({ title: normalizeTitle(initialTitle), tags: initialTags, text: initialText }).current;
+  useImperativeHandle(ref, () => ({
+    hasUnsavedChanges: () =>
+      (item ? normalizeTitle(title) !== initial.title : title.trim() !== "") ||
+      (mode === "text" && (item ? text !== initial.text : text.trim() !== "")) ||
+      tagDraft.trim() !== "" ||
+      tags.length !== initial.tags.length ||
+      tags.some((tag, index) => tag !== initial.tags[index]),
+  }));
   const tagInputRef = useRef<HTMLInputElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const atLimit = tags.length >= MAX_TAGS_PER_ITEM;
@@ -344,6 +357,7 @@ const FavoriteEditor = ({
 };
 
 export const FavoriteRow = ({
+  editorRef,
   item,
   t,
   query,
@@ -358,6 +372,7 @@ export const FavoriteRow = ({
   onDelete,
   onDragEnd,
 }: {
+  editorRef?: Ref<UnsavedChangesHandle>;
   item: FavoriteItem;
   t: Translate;
   query: string;
@@ -397,6 +412,7 @@ export const FavoriteRow = ({
     >
       {editing ? (
         <FavoriteEditor
+          ref={editorRef}
           t={t}
           mode={mode}
           item={item}
@@ -500,6 +516,8 @@ const FavoritesPanel = forwardRef<FavoritesPanelHandle, FavoritesPanelProps>(({
   const [editingId, setEditingId] = useState<number | null>(null);
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const editorRef = useRef<UnsavedChangesHandle>(null);
   const [overflow, setOverflow] = useState({ left: false, right: false });
   const search = useLiveSearch(0);
   const query = search.search;
@@ -569,6 +587,8 @@ const FavoritesPanel = forwardRef<FavoritesPanelHandle, FavoritesPanelProps>(({
   };
 
   useImperativeHandle(ref, () => ({
+    hasUnsavedChanges: () => editorRef.current?.hasUnsavedChanges() ?? false,
+    isSaving: () => savingRef.current,
     focusSearchIfWithin: () => {
       if (!panelRef.current?.contains(document.activeElement)) return false;
       searchInputRef.current?.focus({ preventScroll: true });
@@ -622,7 +642,14 @@ const FavoritesPanel = forwardRef<FavoritesPanelHandle, FavoritesPanelProps>(({
 
   const fail = (error: unknown) => pushToast(t("save_failed") + String(error), 3000);
 
+  const finishSaving = () => {
+    savingRef.current = false;
+    setSaving(false);
+  };
+
   const saveNew = ({ title, tags, text }: EditorValue) => {
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     invoke("add_favorite_text", { text, title, tags })
       .then(() => {
@@ -634,10 +661,12 @@ const FavoritesPanel = forwardRef<FavoritesPanelHandle, FavoritesPanelProps>(({
         if (String(error).includes("favorite_duplicate")) pushToast(t("favorites_duplicate"), 3000);
         else fail(error);
       })
-      .finally(() => setSaving(false));
+      .finally(finishSaving);
   };
 
   const saveEdit = (item: FavoriteItem, mode: EditorMode, { title, tags, text }: EditorValue) => {
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     const saved =
       mode === "text"
@@ -646,7 +675,7 @@ const FavoritesPanel = forwardRef<FavoritesPanelHandle, FavoritesPanelProps>(({
     saved
       .then(closeEditor)
       .catch(fail)
-      .finally(() => setSaving(false));
+      .finally(finishSaving);
   };
 
   return (
@@ -752,6 +781,7 @@ const FavoritesPanel = forwardRef<FavoritesPanelHandle, FavoritesPanelProps>(({
       <div className="panel-scroll">
         {adding && (
           <FavoriteEditor
+            ref={editorRef}
             t={t}
             mode="text"
             initialTitle=""
@@ -801,6 +831,7 @@ const FavoritesPanel = forwardRef<FavoritesPanelHandle, FavoritesPanelProps>(({
                 query={query}
                 editing={editingId === item.id}
                 existingTags={allTags}
+                editorRef={editingId === item.id ? editorRef : undefined}
                 saving={saving}
                 pushToast={pushToast}
                 onPaste={() => {

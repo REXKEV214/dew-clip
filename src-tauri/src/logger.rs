@@ -44,7 +44,11 @@ impl LogSink {
         self.flush()?;
         let mut backup = self.path.as_os_str().to_os_string();
         backup.push(".1");
-        fs::rename(&self.path, backup)?;
+        match fs::rename(&self.path, backup) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
         self.file = None;
         self.open_current()
     }
@@ -189,6 +193,22 @@ mod tests {
             fs::read_to_string(backup).unwrap(),
             "log from a previous session\n"
         );
+
+        drop(sink);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rotation_reopens_a_log_deleted_while_running() {
+        let dir = temporary_log_dir();
+        let path = dir.join("dewclip.log");
+        let mut sink = LogSink::open(path.clone(), 16).unwrap();
+        sink.write_line("old log".into()).unwrap();
+        fs::remove_file(&path).unwrap();
+
+        sink.write_line("replacement".into()).unwrap();
+        sink.write_line("new".into()).unwrap();
+        assert_eq!(fs::read_to_string(path).unwrap(), "replacement\nnew\n");
 
         drop(sink);
         fs::remove_dir_all(dir).unwrap();

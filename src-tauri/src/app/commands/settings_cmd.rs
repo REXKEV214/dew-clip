@@ -5,6 +5,7 @@ use crate::database::DbState;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::macos_api::window::{self as panel, WindowPinMode, PIN_MODE_KEY};
 use crate::infrastructure::repository::settings_repo::SettingsRepository;
+use crate::services::updater;
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Manager, State};
 
@@ -18,6 +19,12 @@ pub fn save_setting(
 ) -> AppResult<()> {
     if crate::database::is_translation_setting(&key) {
         return Err(AppError::Validation("use save_translation_config".into()));
+    }
+    if updater::is_internal_setting(&key) {
+        return Err(AppError::Validation("update_failed".into()));
+    }
+    if key == updater::ENABLED_KEY {
+        return updater::set_enabled(&app_handle, value == "true");
     }
     let atomic_setting = match key.as_str() {
         "app.history_retention_days" => Some((&settings_state.history_retention_days, value.parse().unwrap_or(0))),
@@ -155,7 +162,9 @@ pub fn set_window_pin_mode(app_handle: AppHandle, mode: WindowPinMode) -> AppRes
 pub fn get_settings(
     state: State<'_, DbState>,
 ) -> AppResult<std::collections::HashMap<String, String>> {
-    state.settings_repo.get_all().map_err(AppError::from)
+    let mut settings = state.settings_repo.get_all()?;
+    settings.retain(|key, _| !updater::is_internal_setting(key));
+    Ok(settings)
 }
 
 
@@ -252,13 +261,7 @@ pub fn reset_settings(
     state: State<'_, DbState>,
     settings_state: State<'_, crate::app_state::SettingsState>,
 ) -> AppResult<()> {
-    use crate::database::seed_defaults;
-
-    state.settings_repo.clear().map_err(AppError::from)?;
-    {
-        let conn = state.conn.lock().unwrap();
-        seed_defaults(&conn).map_err(AppError::from)?;
-    }
+    updater::reset_settings(&app)?;
     // Running state follows the defaults now, not after the next start.
     let fresh = crate::app::setup::load_settings(&state.settings_repo)?;
     settings_state.take_values_from(crate::app::setup::settings_state_from(&fresh));

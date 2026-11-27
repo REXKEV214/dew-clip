@@ -85,6 +85,7 @@ test("the queue grip handles arrows before they can change the history selection
       enabled: true, selectedIndex: 0, setSelectedIndex: (index) => historySelections.push(index),
       typeFilter: null, setTypeFilter: () => {}, paste: () => {}, pastePlain: () => {}, copy: () => {}, remove: () => {}, focusSearch: () => {},
       searchPending: false, flushSearch: () => {}, isSearchComposing: () => false,
+      isComposing: () => false, requestCloseWindow: () => {},
       dismiss: () => false, panel: "queue", blocked: false, batchCount: 0, canSelectAll: true,
       startBatchSelectAll: () => {}, toggleSelectAll: () => {}, requestBatchDelete: () => {},
     });
