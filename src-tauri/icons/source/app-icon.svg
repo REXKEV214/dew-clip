@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <path id="plate" d="M512 100
+      C605.73 100 686.06 99.22 738.60 104.23
+      C769.53 107.18 797.16 112.36 821 121.73
+      C840.12 129.24 856.77 139.44 870.67 153.33
+      C884.56 167.23 894.76 183.88 902.27 203
+      C911.64 226.84 916.82 254.47 919.77 285.40
+      C924.78 337.94 924 418.27 924 512
+      C924 605.73 924.78 686.06 919.77 738.60
+      C916.82 769.53 911.64 797.16 902.27 821
+      C894.76 840.12 884.56 856.77 870.67 870.67
+      C856.77 884.56 840.12 894.76 821 902.27
+      C797.16 911.64 769.53 916.82 738.60 919.77
+      C686.06 924.78 605.73 924 512 924
+      C418.27 924 337.94 924.78 285.40 919.77
+      C254.47 916.82 226.84 911.64 203 902.27
+      C183.88 894.76 167.23 884.56 153.33 870.67
+      C139.44 856.77 129.24 840.12 121.73 821
+      C112.36 797.16 107.18 769.53 104.23 738.60
+      C99.22 686.06 100 605.73 100 512
+      C100 418.27 99.22 337.94 104.23 285.40
+      C107.18 254.47 112.36 226.84 121.73 203
+      C129.24 183.88 139.44 167.23 153.33 153.33
+      C167.23 139.44 183.88 129.24 203 121.73
+      C226.84 112.36 254.47 107.18 285.40 104.23
+      C337.94 99.22 418.27 100 512 100Z"/>
+    <linearGradient id="plate-fill" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fdfeff"/>
+      <stop offset="0.5" stop-color="#eff3f8"/>
+      <stop offset="1" stop-color="#e2e8f0"/>
+    </linearGradient>
+    <linearGradient id="plate-rim" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff"/>
+      <stop offset="0.56" stop-color="#f1f5fa"/>
+      <stop offset="1" stop-color="#c4cfdd"/>
+    </linearGradient>
+    <clipPath id="plate-clip">
+      <use href="#plate"/>
+    </clipPath>
+    <filter id="soft-shadow" x="0" y="0" width="1024" height="1024" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="26"/>
+    </filter>
+    <filter id="contact-shadow" x="0" y="0" width="1024" height="1024" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+  </defs>
+  <use href="#plate" fill="#0d1931" opacity="0.275" filter="url(#soft-shadow)" transform="translate(0 17)"/>
+  <use href="#plate" fill="#0d1931" opacity="0.08" filter="url(#contact-shadow)" transform="translate(0 5)"/>
+  <use href="#plate" fill="url(#plate-fill)"/>
+  <use href="#plate" fill="none" stroke="url(#plate-rim)" stroke-width="3" clip-path="url(#plate-clip)"/>
+  <g transform="translate(182 181) scale(18.7)" fill="#0765e6">
+    <path d="M16.55 2.05
+      Q17 1.15 17.45 2.05
+      C18.55 4.25 20.7 5.75 20.7 7.75
+      C20.7 9.8 19.09 11.15 17 11.15
+      C14.91 11.15 13.3 9.8 13.3 7.75
+      C13.3 5.75 15.45 4.25 16.55 2.05Z"/>
+    <g fill="none" stroke="#0765e6" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M24.4 7H25.2
+        A3.8 3.8 0 0 1 29 10.8V23.6
+        A3.8 3.8 0 0 1 25.2 27.4H8.8
+        A3.8 3.8 0 0 1 5 23.6V10.8
+        A3.8 3.8 0 0 1 8.8 7H9.6"/>
+      <path d="M10.1 15H23.9 M10.1 21H23.9"/>
+      <path d="M11.2 32.6H27.4C29.25 32.6 30.7 31.85 31.7 30.6"/>
+    </g>
+  </g>
+</svg>
