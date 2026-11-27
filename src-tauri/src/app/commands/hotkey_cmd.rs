@@ -1,4 +1,4 @@
-use crate::app_state::SettingsState;
+use crate::app_state::{PasteQueue, SettingsState};
 use crate::database::DbState;
 use crate::error::{AppError, AppResult};
 use crate::global_state::{HOTKEY_STRING, IS_RECORDING};
@@ -39,10 +39,22 @@ fn should_register_main_hotkey(hotkey: &str) -> bool {
     }
 
     // Never turn a Win+V setting into Command+V and intercept system paste.
-    !is_win_v_hotkey(hotkey)
+    !is_win_v_hotkey(hotkey) && !is_close_window_shortcut(hotkey)
 }
 
-fn parse_shortcut(hotkey: &str) -> Option<Shortcut> {
+fn is_close_window_shortcut(hotkey: &str) -> bool {
+    cfg!(target_os = "macos") &&
+        parse_shortcut(hotkey).is_some_and(|shortcut| Some(shortcut) == parse_shortcut("Command+W"))
+}
+
+fn validate_close_window_shortcut(hotkey: &str) -> AppResult<()> {
+    if is_close_window_shortcut(hotkey) {
+        return Err(AppError::Validation("hotkey_reserved_close".into()));
+    }
+    Ok(())
+}
+
+pub(crate) fn parse_shortcut(hotkey: &str) -> Option<Shortcut> {
     if hotkey.is_empty()
         || hotkey.eq_ignore_ascii_case("MouseMiddle")
         || hotkey.eq_ignore_ascii_case("MButton")
@@ -53,6 +65,12 @@ fn parse_shortcut(hotkey: &str) -> Option<Shortcut> {
     hotkey.replace("Win", "Super").parse::<Shortcut>().ok()
 }
 
+fn validate_distinct_hotkeys(main: &str, sequential: &str) -> AppResult<()> {
+    if parse_shortcut(main).is_some_and(|shortcut| Some(shortcut) == parse_shortcut(sequential)) {
+        return Err(AppError::Validation("hotkey_conflict".into()));
+    }
+    Ok(())
+}
 
 
 
@@ -81,15 +99,29 @@ pub fn sync_registered_hotkeys(app_handle: &AppHandle) -> AppResult<()> {
     }
     let settings = app_handle.state::<SettingsState>();
     let main_hotkey = settings.main_hotkey.lock().unwrap().clone();
-    apply_registered_hotkeys(app_handle, &main_hotkey)
+    let sequential_hotkey = settings.sequential_paste_hotkey.lock().unwrap().clone();
+    apply_registered_hotkeys(app_handle, &main_hotkey, &sequential_hotkey)
 }
 
-fn apply_registered_hotkeys(app_handle: &AppHandle, main_hotkey: &str) -> AppResult<()> {
+pub(crate) fn registered_sequential_hotkey(app: &AppHandle) -> Option<String> {
+    if IS_RECORDING.load(Ordering::SeqCst) {
+        return None;
+    }
+    let settings = app.state::<SettingsState>();
+    let main = settings.main_hotkey.lock().unwrap().clone();
+    let hotkey = settings.sequential_paste_hotkey.lock().unwrap().clone();
+    if !should_register_main_hotkey(&hotkey) || validate_distinct_hotkeys(&main, &hotkey).is_err() {
+        return None;
+    }
+    parse_shortcut(&hotkey)
+        .filter(|shortcut| app.global_shortcut().is_registered(*shortcut))
+        .map(|_| hotkey)
+}
+
+fn apply_registered_hotkeys(app_handle: &AppHandle, main_hotkey: &str, sequential_hotkey: &str) -> AppResult<()> {
     app_handle.global_shortcut().unregister_all()
         .map_err(|error| AppError::Internal(error.to_string()))?;
-    let settings = app_handle.state::<SettingsState>();
-    let sequential_hotkey = settings.sequential_paste_hotkey.lock().unwrap().clone();
-    let sequential_mode = settings.sequential_mode.load(Ordering::Relaxed);
+    let has_queued_items = app_handle.state::<PasteQueue>().0.lock().unwrap().has_items();
     let mut registered = HashSet::new();
     // Register every shortcut even if one fails (e.g. taken by another app):
     // an early return used to leave the later ones unregistered, so pressing
@@ -107,10 +139,10 @@ fn apply_registered_hotkeys(app_handle: &AppHandle, main_hotkey: &str) -> AppRes
         register(main_hotkey);
     }
 
-    // Only bind sequential paste while the mode is enabled (#125).
-    // Do not keep Alt+V registered for stale queue items after the mode is turned off.
-    if sequential_mode {
-        register(&sequential_hotkey);
+    if has_queued_items && should_register_main_hotkey(sequential_hotkey)
+        && validate_distinct_hotkeys(main_hotkey, sequential_hotkey).is_ok()
+    {
+        register(sequential_hotkey);
     }
 
     first_error.map_or(Ok(()), Err)
@@ -129,9 +161,12 @@ pub fn sync_registered_hotkeys_on_main_thread(app_handle: &AppHandle) {
 
 #[tauri::command]
 pub fn register_hotkey(app_handle: AppHandle, hotkey: String) -> AppResult<()> {
+    validate_close_window_shortcut(&hotkey)?;
     let settings = app_handle.state::<SettingsState>();
     let previous = settings.main_hotkey.lock().unwrap().clone();
-    let result = apply_registered_hotkeys(&app_handle, &hotkey).and_then(|()| {
+    let sequential = settings.sequential_paste_hotkey.lock().unwrap().clone();
+    validate_distinct_hotkeys(&hotkey, &sequential)?;
+    let result = apply_registered_hotkeys(&app_handle, &hotkey, &sequential).and_then(|()| {
         app_handle
             .state::<DbState>()
             .settings_repo
@@ -139,7 +174,7 @@ pub fn register_hotkey(app_handle: AppHandle, hotkey: String) -> AppResult<()> {
             .map_err(AppError::from)
     });
     if let Err(error) = result {
-        if let Err(restore_error) = apply_registered_hotkeys(&app_handle, &previous) {
+        if let Err(restore_error) = apply_registered_hotkeys(&app_handle, &previous, &sequential) {
             return Err(AppError::Internal(format!("{error}\n{restore_error}")));
         }
         crate::app::hooks::update_recording_flags(false);
@@ -149,6 +184,30 @@ pub fn register_hotkey(app_handle: AppHandle, hotkey: String) -> AppResult<()> {
     *settings.main_hotkey.lock().unwrap() = hotkey.clone();
     *HOTKEY_STRING.lock().unwrap() = hotkey;
     crate::app::hooks::update_recording_flags(false);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_sequential_hotkey(app_handle: AppHandle, hotkey: String) -> AppResult<()> {
+    validate_close_window_shortcut(&hotkey)?;
+    let settings = app_handle.state::<SettingsState>();
+    let main = settings.main_hotkey.lock().unwrap().clone();
+    validate_distinct_hotkeys(&main, &hotkey)?;
+    if !hotkey.is_empty() && (parse_shortcut(&hotkey).is_none() || is_typing_hotkey(&hotkey) || is_win_v_hotkey(&hotkey)) {
+        return Err(AppError::Validation("sequential_invalid_hotkey".into()));
+    }
+
+    let previous = settings.sequential_paste_hotkey.lock().unwrap().clone();
+    let recording = IS_RECORDING.load(Ordering::SeqCst);
+    let result = (if recording { Ok(()) } else { apply_registered_hotkeys(&app_handle, &main, &hotkey) })
+        .and_then(|()| app_handle.state::<DbState>().settings_repo.set("app.sequential_hotkey", &hotkey).map_err(AppError::from));
+    if let Err(error) = result {
+        if !recording {
+            apply_registered_hotkeys(&app_handle, &main, &previous)?;
+        }
+        return Err(error);
+    }
+    *settings.sequential_paste_hotkey.lock().unwrap() = hotkey;
     Ok(())
 }
 
@@ -183,7 +242,7 @@ pub fn is_typing_hotkey(hotkey: &str) -> bool {
     !silent
 }
 
-/// `allow_typing`: the wake hotkey may be Shift + a letter (default ⇧Z) — the
+/// `allow_typing`: the wake hotkey may be Shift + a letter (e.g. ⇧Z) — the
 /// user accepts that the character can't be typed while it is registered.
 /// Shift plus one letter or digit, e.g. `Shift+Z`.
 pub fn is_shift_letter_hotkey(hotkey: &str) -> bool {
@@ -203,12 +262,17 @@ pub fn test_hotkey_available(
     app_handle: AppHandle,
     hotkey: String,
     allow_typing: Option<bool>,
+    for_sequential: Option<bool>,
 ) -> AppResult<bool> {
+    validate_close_window_shortcut(&hotkey)?;
     if hotkey.is_empty()
         || hotkey.eq_ignore_ascii_case("MouseMiddle")
         || hotkey.eq_ignore_ascii_case("MButton")
     {
         return Ok(true);
+    }
+    if for_sequential == Some(true) && (is_typing_hotkey(&hotkey) || is_win_v_hotkey(&hotkey)) {
+        return Err(AppError::Validation("sequential_invalid_hotkey".into()));
     }
     if is_typing_hotkey(&hotkey) && !(allow_typing.unwrap_or(false) && is_shift_letter_hotkey(&hotkey)) {
         return Err(AppError::Validation(
@@ -222,9 +286,16 @@ pub fn test_hotkey_available(
         .map_err(|_| AppError::Validation("请重新设置快捷键组合。".to_string()))?;
 
     let settings = app_handle.state::<SettingsState>();
-    if parse_shortcut(&settings.main_hotkey.lock().unwrap()).as_ref() == Some(&shortcut)
-        && app_handle.global_shortcut().is_registered(shortcut)
-    {
+    let main = settings.main_hotkey.lock().unwrap().clone();
+    let sequential = settings.sequential_paste_hotkey.lock().unwrap().clone();
+    let current = if for_sequential == Some(true) {
+        validate_distinct_hotkeys(&main, &hotkey)?;
+        &sequential
+    } else {
+        validate_distinct_hotkeys(&hotkey, &sequential)?;
+        &main
+    };
+    if parse_shortcut(current) == Some(shortcut) && app_handle.global_shortcut().is_registered(shortcut) {
         return Ok(true);
     }
 
@@ -248,6 +319,25 @@ pub fn test_hotkey_available(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn command_w_cannot_be_registered_as_a_global_hotkey() {
+        for keyboard in ["Command+W", "Super+KeyW", "Cmd+w"] {
+            assert!(!super::should_register_main_hotkey(keyboard));
+            assert!(super::validate_close_window_shortcut(keyboard).is_err());
+        }
+        assert!(super::should_register_main_hotkey("Command+Shift+W"));
+        assert!(super::should_register_main_hotkey("Ctrl+W"));
+    }
+
+    #[test]
+    fn wake_and_sequential_hotkeys_cannot_share_a_normalized_binding() {
+        for (wake, sequential) in [("Alt+V", "Option+v"), ("Option+v", "Alt+V"), ("Win+S", "Command+s")] {
+            assert_eq!(super::validate_distinct_hotkeys(wake, sequential).unwrap_err().to_string(), "[validation] hotkey_conflict");
+        }
+        assert!(super::validate_distinct_hotkeys("Alt+Z", "Alt+V").is_ok());
+        assert!(super::validate_distinct_hotkeys("", "").is_ok());
+    }
     #[test]
     fn shift_letter_wake_hotkey_is_recognized() {
         assert!(super::is_shift_letter_hotkey("Shift+Z"));

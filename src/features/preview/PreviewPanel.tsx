@@ -5,6 +5,8 @@ import type { ClipboardEntry, Translate } from "../../shared/types";
 import { originalImageSrc } from "../../shared/hooks/useImageThumbnail";
 import { toLocalFilePath } from "../../shared/lib/localImageSrc";
 import { startWindowDrag } from "../../shared/lib/windowDrag";
+import { entryKey } from "../../shared/lib/clipboardTypes";
+import { previewContentRequest } from "./previewContentRequest";
 
 interface PreviewPanelProps {
   t: Translate;
@@ -62,22 +64,27 @@ const VideoPreview = ({ t, entry }: PreviewPanelProps) => {
   );
 };
 
-const TextPreview = ({ entry }: { entry: ClipboardEntry }) => {
+const TextPreview = ({ t, entry }: PreviewPanelProps) => {
+  const { id, createdAt } = entryKey(entry);
   const [text, setText] = useState(entry.content || entry.preview);
+  const [unavailable, setUnavailable] = useState(false);
 
   // The list holds a shortened copy of long entries.
   useEffect(() => {
     let alive = true;
-    invoke<string>("get_clipboard_content", { id: entry.id })
+    invoke<string>(...previewContentRequest(id, createdAt))
       .then((full) => {
         if (alive) setText(full);
       })
-      .catch(console.error);
+      .catch(() => {
+        if (alive) setUnavailable(true);
+      });
     return () => {
       alive = false;
     };
-  }, [entry.id]);
+  }, [id, createdAt]);
 
+  if (unavailable) return <div className="preview-message">{t("preview_unavailable")}</div>;
   return <div className={`preview-text${entry.content_type === "code" ? " is-code" : ""}`}>{text}</div>;
 };
 
@@ -89,7 +96,7 @@ const PreviewPanel = ({ t, entry }: PreviewPanelProps) => (
     <div className="panel-scroll">
       {entry.content_type === "image" && <ImagePreview t={t} entry={entry} />}
       {entry.content_type === "video" && <VideoPreview t={t} entry={entry} />}
-      {entry.content_type !== "image" && entry.content_type !== "video" && <TextPreview entry={entry} />}
+      {entry.content_type !== "image" && entry.content_type !== "video" && <TextPreview t={t} entry={entry} />}
     </div>
   </div>
 );

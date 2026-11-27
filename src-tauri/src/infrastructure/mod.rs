@@ -1,3 +1,4 @@
+pub mod app_path;
 pub mod encryption;
 pub mod stable_hash;
 #[cfg(target_os = "macos")]

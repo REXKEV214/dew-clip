@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { ClipboardEntry } from "../../shared/types";
+import type { ClipboardEntry, SidePanelKind } from "../../shared/types";
 import { hasOpenDialog, isField } from "../app/useKeyboard";
 
 /** A shorter press is just a key tap. */
@@ -8,6 +8,9 @@ const CARD_ID_PREFIX = "clipboard-item-";
 
 /** Files have no preview yet. */
 export const canPreview = (entry: ClipboardEntry) => entry.content_type !== "file";
+
+export const panelAfterPreview = (previous: SidePanelKind | null, sequentialActive: boolean) =>
+  previous === "favorites" || (previous === "queue" && sequentialActive) ? previous : null;
 
 export const entryIdFromCard = (elementId: string | undefined): number | null => {
   if (!elementId?.startsWith(CARD_ID_PREFIX)) return null;
@@ -34,6 +37,7 @@ const pickEntry = ({ items, selectedIndex }: SpacePreviewOptions) => {
 /** Holding Space previews an entry; letting go puts it away. */
 export const useSpacePreview = (options: SpacePreviewOptions) => {
   const ref = useRef(options);
+  const cancelRef = useRef<() => void>(() => {});
   ref.current = options;
 
   useEffect(() => {
@@ -41,21 +45,25 @@ export const useSpacePreview = (options: SpacePreviewOptions) => {
     let pressed = false;
     let previewing = false;
 
-    const release = () => {
+    const cancel = () => {
       pressed = false;
       if (timer !== null) {
         window.clearTimeout(timer);
         timer = null;
       }
-      if (previewing) {
-        previewing = false;
-        ref.current.onClose();
-      }
+      previewing = false;
+    };
+    cancelRef.current = cancel;
+    const release = () => {
+      const wasPreviewing = previewing;
+      cancel();
+      if (wasPreviewing) ref.current.onClose();
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.code !== "Space" || event.defaultPrevented || event.isComposing) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      if (event.target instanceof Element && event.target.closest(".window-close")) return;
       if (!ref.current.enabled || isField(event.target) || hasOpenDialog()) return;
 
       // Space would also scroll the list, or click a focused button.
@@ -88,4 +96,5 @@ export const useSpacePreview = (options: SpacePreviewOptions) => {
       release();
     };
   }, []);
+  return cancelRef;
 };

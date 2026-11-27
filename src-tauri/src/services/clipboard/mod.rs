@@ -36,6 +36,7 @@ fn single_image_file(paths: &[String]) -> Option<(Vec<u8>, String)> {
 
 #[cfg(target_os = "macos")]
 struct CaptureSnapshot {
+    captured_at: std::time::Instant,
     files: Option<Vec<String>>,
     text: Option<String>,
     html: Option<String>,
@@ -52,6 +53,7 @@ struct CaptureSnapshot {
 #[cfg(target_os = "macos")]
 impl CaptureSnapshot {
     fn read(app: &AppHandle, count: isize) -> Result<Option<Self>, ()> {
+        let captured_at = std::time::Instant::now();
         if native::change_count() != count {
             return Err(());
         }
@@ -70,6 +72,7 @@ impl CaptureSnapshot {
         let persistent = settings.persistent.load(Ordering::Relaxed);
         let files = native::get_clipboard_files();
         let mut snapshot = Self {
+            captured_at,
             files,
             text: None,
             html: None,
@@ -214,6 +217,7 @@ pub fn start_clipboard_monitor(app: AppHandle) {
                     snapshot.source_app,
                     snapshot.source_app_path,
                     snapshot.timestamp,
+                    snapshot.captured_at,
                     snapshot.persistent,
                 );
                 pipeline.execute(&mut context);
@@ -238,7 +242,7 @@ pub fn clipboard_image_fallback_data_url() -> Option<String> {
 }
 
 pub use pipeline::{ClipboardData, ClipboardPipeline, PipelineContext};
-pub(crate) use utils::truncate_entry_for_ui;
+pub(crate) use utils::{file_names_match, truncate_entry_for_ui};
 pub use utils::{
     app_likely_word_processor, attach_rich_image_fallback, attach_rich_named_formats,
     build_clipboard_text_fingerprint, build_entry_preview, build_exact_paste_html,

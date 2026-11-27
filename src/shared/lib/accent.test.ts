@@ -1,5 +1,6 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
-import { ACCENT_NAMES, applyAccent, DEFAULT_ACCENT, normalizeAccent } from "./accent";
+import { ACCENTS, ACCENT_NAMES, applyAccent, DEFAULT_ACCENT, normalizeAccent } from "./accent";
 
 describe("accent", () => {
   it("offers six colours, blue first and default", () => {
@@ -16,11 +17,19 @@ describe("accent", () => {
   });
 
   it("writes the CSS variables, with rgb triplets", () => {
-    const style = new Map<string, string>();
-    const root = { style: { setProperty: (k: string, v: string) => style.set(k, v) } } as unknown as HTMLElement;
+    const root = document.createElement("div");
     applyAccent("blue", root);
-    expect(style.get("--accent")).toBe("#0a84ff");
-    expect(style.get("--accent-rgb")).toBe("10, 132, 255");
-    expect(style.get("--accent-strong-rgb")).toBe("0, 102, 224");
+    expect(root.style.getPropertyValue("--accent")).toBe("#0a84ff");
+    expect(root.style.getPropertyValue("--accent-rgb")).toBe("10, 132, 255");
+    expect(root.style.getPropertyValue("--accent-strong-rgb")).toBe("0, 102, 224");
+  });
+
+  it.each(ACCENT_NAMES)("writes readable light and dark inks for %s", (name) => {
+    const root = document.createElement("div");
+    applyAccent(name, root);
+    expect(root.style.getPropertyValue("--accent-strong")).toBe(ACCENTS[name].strong);
+    expect(root.style.getPropertyValue("--accent-ink-dark")).toBe(ACCENTS[name].darkInk);
+    expect(ACCENTS[name].darkInk).toMatch(/^#[\da-f]{6}$/);
+    expect(ACCENTS[name].darkInk).not.toBe(ACCENTS[name].strong);
   });
 });

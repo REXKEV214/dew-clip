@@ -23,10 +23,42 @@ const list: KeyContext = {
   selectedIndex: 1,
   batchCount: 0,
   canSelectAll: true,
+  searchPending: false,
+  hasTextSelection: false,
 };
 const batch: KeyContext = { ...list, panel: "batch", listKeys: false, selectedIndex: null, batchCount: 3 };
+const search: KeyContext = { ...list, inField: true, inSearch: true };
 
 const type = (input: KeyInput, ctx: KeyContext) => resolveKey(input, ctx).type;
+
+describe("Command+W", () => {
+  test("closes in one step from the list, active search, each side panel and settings", () => {
+    const contexts = [
+      list, { ...list, selectedIndex: null }, { ...search, searchPending: true },
+      { ...list, blocked: true, listKeys: false }, batch,
+      ...(["edit", "translate", "preview", "favorites", "queue"] as const).map((panel) => ({ ...list, panel })),
+    ];
+    for (const context of contexts) {
+      expect(type(cmd("w"), context)).toBe("closeWindow");
+      expect(type(cmd("W"), context)).toBe("closeWindow");
+    }
+  });
+
+  test("requires Command alone and handles IME, dialogs, recording and positioning", () => {
+    for (const mods of [
+      { ctrlKey: true }, { altKey: true }, { metaKey: true, shiftKey: true },
+      { metaKey: true, altKey: true }, { metaKey: true, ctrlKey: true },
+    ]) {
+      expect(type(key("w", mods), list)).toBe("ignore");
+    }
+    expect(type({ ...cmd("w"), repeat: true }, list)).toBe("consume");
+    expect(type(cmd("w"), { ...list, dialogOpen: true })).toBe("consume");
+    expect(type(cmd("w"), { ...list, settingFixedPosition: true })).toBe("consume");
+    expect(type(cmd("w"), { ...list, recordingHotkey: true })).toBe("ignore");
+    expect(type({ ...cmd("w"), isComposing: true }, { ...list, dialogOpen: true })).toBe("ignore");
+    expect(type(cmd("Process"), list)).toBe("ignore");
+  });
+});
 
 describe("Cmd+A", () => {
   test("on the list: batch mode with everything ticked", () => {
@@ -153,6 +185,82 @@ describe("the list", () => {
   test("preview and favorites keep the list keys", () => {
     for (const panel of ["preview", "favorites"] as const) {
       expect(type(key("Enter"), { ...list, panel })).toBe("paste");
+    }
+  });
+});
+
+describe("find", () => {
+  test("accepts Command or Control with no Shift or Option", () => {
+    expect(type(cmd("F"), list)).toBe("focusSearch");
+    expect(type(key("f", { ctrlKey: true }), batch)).toBe("focusSearch");
+    expect(type(cmd("f"), { ...list, panel: "favorites", inField: true, listKeys: false })).toBe("focusSearch");
+    expect(type(cmd("f"), { ...list, panel: "translate", listKeys: false })).toBe("ignore");
+    for (const mods of [{ shiftKey: true }, { altKey: true }, { isComposing: true }]) {
+      expect(type(key("f", { metaKey: true, ...mods }), list)).toBe("ignore");
+    }
+    expect(type(cmd("g"), list)).toBe("ignore");
+    expect(type(key("F3"), list)).toBe("ignore");
+  });
+});
+
+describe("paste and copy shortcuts", () => {
+  const shiftedReturn = key("Enter", { shiftKey: true });
+
+  test("Return pastes the first settled result and Shift+Return uses plain text", () => {
+    const first = { ...search, selectedIndex: 0 };
+    expect(type(key("Enter"), first)).toBe("paste");
+    expect(type(shiftedReturn, first)).toBe("pastePlain");
+    for (const mods of [{ metaKey: true }, { ctrlKey: true }, { altKey: true }, { isComposing: true }]) {
+      expect(type(key("Enter", { ...mods, shiftKey: true }), first)).toBe("ignore");
+    }
+    expect(type(shiftedReturn, { ...first, selectedIndex: null })).toBe("ignore");
+  });
+
+  test("Command digits use the current list order even while typing in search", () => {
+    expect(resolveKey(cmd("1"), { ...list, selectedIndex: null })).toEqual({ type: "pasteIndex", index: 0 });
+    expect(resolveKey(cmd("9"), { ...search, itemCount: 9 })).toEqual({ type: "pasteIndex", index: 8 });
+    expect(resolveKey(key("&", { code: "Digit2", metaKey: true }), list)).toEqual({ type: "pasteIndex", index: 1 });
+    expect(type(cmd("6"), list)).toBe("consume");
+    expect(type(cmd("1"), { ...list, itemCount: 0 })).toBe("consume");
+    expect(type(cmd("0"), list)).toBe("ignore");
+    for (const mods of [{ shiftKey: true }, { altKey: true }, { ctrlKey: true }]) {
+      expect(type(key("3", { metaKey: true, code: "Digit3", ...mods }), list)).toBe("ignore");
+    }
+  });
+
+  test("Command+C copies a card only when the user has no text selection", () => {
+    expect(type(cmd("C"), list)).toBe("copy");
+    expect(type(cmd("c"), search)).toBe("copy");
+    expect(type(cmd("c"), { ...list, selectedIndex: null })).toBe("ignore");
+    expect(type(cmd("c"), { ...search, hasTextSelection: true })).toBe("ignore");
+    expect(type(cmd("c"), { ...list, panel: "preview", hasTextSelection: true })).toBe("ignore");
+    for (const mods of [{ shiftKey: true }, { altKey: true }, { ctrlKey: true }]) {
+      expect(type(key("c", { metaKey: true, ...mods }), list)).toBe("ignore");
+    }
+  });
+
+  test("pending search consumes every paste and copy shortcut and flushes the query", () => {
+    for (const ctx of [list, search, { ...search, itemCount: 0, selectedIndex: null }]) {
+      for (const input of [key("Enter"), shiftedReturn, cmd("9"), cmd("c")]) {
+        expect(type(input, { ...ctx, searchPending: true })).toBe("flushSearch");
+      }
+    }
+    expect(type(cmd("c"), { ...search, searchPending: true, hasTextSelection: true })).toBe("ignore");
+  });
+
+  test("editors, batch mode, settings and dialogs disable single-entry shortcuts", () => {
+    for (const ctx of [
+      { ...list, inField: true },
+      { ...list, panel: "edit" as const, listKeys: false },
+      { ...list, panel: "translate" as const, listKeys: false },
+      { ...list, panel: "favorites" as const, listKeys: false },
+      { ...list, blocked: true },
+      { ...list, dialogOpen: true },
+      { ...batch, selectedIndex: 0 },
+    ]) {
+      for (const input of [key("Enter"), shiftedReturn, cmd("1"), cmd("c")]) {
+        expect(type(input, { ...ctx, searchPending: true })).toBe("ignore");
+      }
     }
   });
 });

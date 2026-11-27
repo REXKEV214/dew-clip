@@ -10,20 +10,29 @@ import { isTauriRuntime } from "../lib/tauriRuntime";
 const resolved = new Map<string, string>();
 const inflight = new Map<string, Promise<string>>();
 const MAX_RESOLVED = 600;
+let cacheRevision = 0;
+
+export const invalidateThumbnailCache = () => {
+  cacheRevision += 1;
+  resolved.clear();
+  videoResolved.clear();
+};
 
 const loadThumbnail = (path: string, key: string): Promise<string> => {
   let pending = inflight.get(key);
   if (!pending) {
+    const revision = cacheRevision;
     pending = invoke<string>("get_image_thumbnail", { path })
       .then((thumbPath) => convertFileSrc(thumbPath))
       .catch(() => convertFileSrc(path))
       .then((src) => {
+        inflight.delete(key);
+        if (revision !== cacheRevision) return src;
         if (resolved.size >= MAX_RESOLVED) {
           const oldest = resolved.keys().next().value;
           if (oldest !== undefined) resolved.delete(oldest);
         }
         resolved.set(key, src);
-        inflight.delete(key);
         return src;
       });
     inflight.set(key, pending);
@@ -48,7 +57,7 @@ export const useImageThumbnail = (
   version?: number
 ): string | null => {
   const path = content && isTauriRuntime() ? toLocalFilePath(content) : null;
-  const key = path ? `${path}|${version ?? 0}` : null;
+  const key = path ? `${cacheRevision}|${path}|${version ?? 0}` : null;
   const fallback = content ? originalImageSrc(content, isExternal) : null;
   const [src, setSrc] = useState<string | null>(() => (key ? resolved.get(key) ?? null : fallback));
 
@@ -83,16 +92,18 @@ const videoInflight = new Map<string, Promise<string>>();
 const loadVideoThumbnail = (path: string, key: string): Promise<string> => {
   let pending = videoInflight.get(key);
   if (!pending) {
+    const revision = cacheRevision;
     pending = invoke<string>("get_video_thumbnail", { path })
       .then((thumbPath) => convertFileSrc(thumbPath))
       .catch(() => "")
       .then((src) => {
+        videoInflight.delete(key);
+        if (revision !== cacheRevision) return src;
         if (videoResolved.size >= MAX_RESOLVED) {
           const oldest = videoResolved.keys().next().value;
           if (oldest !== undefined) videoResolved.delete(oldest);
         }
         videoResolved.set(key, src);
-        videoInflight.delete(key);
         return src;
       });
     videoInflight.set(key, pending);
@@ -106,7 +117,7 @@ const loadVideoThumbnail = (path: string, key: string): Promise<string> => {
  */
 export const useVideoThumbnail = (content: string | null, version?: number): string | null => {
   const path = content && isTauriRuntime() && !content.startsWith("data:") ? toLocalFilePath(content) : null;
-  const key = path ? `${path}|${version ?? 0}` : null;
+  const key = path ? `${cacheRevision}|${path}|${version ?? 0}` : null;
   const [src, setSrc] = useState<string | null>(() => (key ? videoResolved.get(key) ?? null : ""));
 
   useEffect(() => {

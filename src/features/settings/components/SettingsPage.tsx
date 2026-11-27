@@ -4,26 +4,28 @@ import { invoke } from "@tauri-apps/api/core";
 import { ask, message, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Check, ChevronRight, RotateCcw } from "lucide-react";
-import { version } from "../../../../package.json";
 import { FaviconGithub } from "./FaviconGithub";
 import appLogo from "../../../assets/logo.png";
 import AppSelectorModal from "./AppSelectorModal";
 import TranslationSettings from "./groups/TranslationSettings";
+import { IgnoredApps } from "./groups/IgnoredApps";
+import { StorageSettings } from "./groups/StorageSettings";
 import { HotkeyField, Row, Section, Segmented, Toggle } from "./controls";
 import { chosenApp, unchosenFallback } from "../utils/defaultApps";
-import type { InstalledAppOption } from "../types";
+import type { AppCleanupPolicy, InstalledAppOption } from "../types";
 import type { SettingsStore } from "../../app/useSettings";
+import type { useUpdateStatus } from "../../app/useUpdateStatus";
+import { UpdateSettings } from "../../app/UpdateNotice";
 import type { TranslationConfig } from "../../translate/config";
-import type { Locale, WindowPinMode } from "../../../shared/types";
+import type { ConfirmDialogState, Locale, WindowPinMode } from "../../../shared/types";
 import { withNativeDialog } from "../../../shared/lib/focus";
 import { formatError } from "../../../shared/lib/errorMessage";
 import { requestMacAccessibility } from "../../../shared/lib/macAccessibility";
 import { GITHUB_URL } from "../../../shared/config";
 import { ACCENTS, ACCENT_NAMES, ACCENT_SETTING_KEY, normalizeAccent } from "../../../shared/lib/accent";
+import { APPEARANCE_SETTING_KEY, normalizeAppearance } from "../../../shared/lib/appearance";
 
 const APP_TYPES = ["text", "rich_text", "image", "video", "code", "url"] as const;
-const PERSISTENT_LIMIT_MIN = 50;
-const PERSISTENT_LIMIT_MAX = 99999;
 const GLASS_SAVE_THROTTLE_MS = 100;
 // 复制提示弹窗停留时间 (ms); the default is the slider's middle. Matches capsule.rs.
 const CAPSULE_DURATION_MIN = 1000;
@@ -35,6 +37,15 @@ const appDisplayName = (path: string) => (path.split(/[/\\]/).pop() || path).rep
 
 interface SettingsPageProps {
   settings: SettingsStore;
+  updates: ReturnType<typeof useUpdateStatus>;
+  ignoredApps: {
+    ignored: AppCleanupPolicy[];
+    excludePaths: string[];
+    add: (name: string, path: string) => void;
+    remove: (policy: AppCleanupPolicy) => void;
+  };
+  openConfirm: (options: Omit<ConfirmDialogState, "show">) => void;
+  closeConfirm: () => void;
   pinMode: WindowPinMode;
   onSelectPinMode: (mode: WindowPinMode) => void;
   translationConfig: TranslationConfig | null;
@@ -48,6 +59,10 @@ interface SettingsPageProps {
 
 const SettingsPage = ({
   settings,
+  updates,
+  ignoredApps,
+  openConfirm,
+  closeConfirm,
   pinMode,
   onSelectPinMode,
   translationConfig,
@@ -68,8 +83,6 @@ const SettingsPage = ({
   const [defaultApps, setDefaultApps] = useState<Record<string, string>>({});
   const [appSelector, setAppSelector] = useState<string | null>(null);
   const [hasFixedPosition, setHasFixedPosition] = useState(false);
-
-  const [limitDraft, setLimitDraft] = useState(values["app.persistent_limit"] ?? "1000");
 
   useEffect(() => {
     invoke<boolean>("is_autostart_enabled").then(setAutostart).catch(console.error);
@@ -100,19 +113,24 @@ const SettingsPage = ({
   }, []);
 
   const hotkey = values["app.hotkey"] ?? "";
+  const sequentialHotkey = values["app.sequential_hotkey"] ?? "Alt+V";
 
-  const recordWakeHotkey = async (next: string) => {
+  const recordHotkey = async (next: string, sequential: boolean) => {
     try {
-      await invoke("test_hotkey_available", { hotkey: next, allowTyping: true });
+      await invoke("test_hotkey_available", { hotkey: next, allowTyping: !sequential, forSequential: sequential });
+      await invoke(sequential ? "set_sequential_hotkey" : "register_hotkey", { hotkey: next });
+      remember(sequential ? "app.sequential_hotkey" : "app.hotkey", next);
     } catch (error) {
-      pushToast(`${next}: ${formatError(error, t) || t("hotkey_occupied")}`, 4000);
-      return;
-    }
-    try {
-      await invoke("register_hotkey", { hotkey: next });
-      remember("app.hotkey", next);
-    } catch (error) {
-      pushToast(t("hotkey_register_failed") + String(error), 3000);
+      const reason = String(error);
+      if (reason.includes("hotkey_conflict")) {
+        pushToast(t("hotkey_conflict").replace("{name}", t(sequential ? "wake_hotkey" : "sequential_paste_hotkey")), 4000);
+      } else if (reason.includes("hotkey_reserved_close")) {
+        pushToast(t("hotkey_reserved_close"), 4000);
+      } else if (reason.includes("sequential_invalid_hotkey")) {
+        pushToast(t("sequential_invalid_hotkey"), 4000);
+      } else {
+        pushToast(t("hotkey_register_failed") + (formatError(error, t) || t("hotkey_occupied")), 4000);
+      }
     }
   };
 
@@ -127,18 +145,6 @@ const SettingsPage = ({
   const setPositionMode = (mode: string) => {
     save("app.window_position_mode", mode);
     if (mode === "fixed" && !hasFixedPosition) onSetFixedPosition();
-  };
-
-  const commitLimit = () => {
-    const parsed = parseInt(limitDraft, 10);
-    const previous = values["app.persistent_limit"] ?? "1000";
-    if (!Number.isFinite(parsed)) {
-      setLimitDraft(previous);
-      return;
-    }
-    const clamped = String(Math.min(PERSISTENT_LIMIT_MAX, Math.max(PERSISTENT_LIMIT_MIN, parsed)));
-    setLimitDraft(clamped);
-    save("app.persistent_limit", clamped);
   };
 
   // Each change rebuilds the native glass, so a drag is throttled.
@@ -198,16 +204,18 @@ const SettingsPage = ({
     if (unchosenFallback(values, type) === "text") {
       return `${t("same_as_text_app")} (${appName(chosenApp(values, "text"))})`;
     }
-    return defaultApps[type] ? `${t("system_default")} (${appDisplayName(defaultApps[type])})` : t("not_configured");
+    return defaultApps[type] ? `${t("system_default")} (${defaultApps[type]})` : t("system_default");
   };
 
   const positionMode = values["app.window_position_mode"] ?? "follow_mouse";
+  const downloadRemoteImages = flag("app.download_remote_images", true);
+  const pickingIgnoredApp = appSelector === "ignored";
 
   return (
     <div className="settings-page">
       <Section title={t("section_common")} open={!!openSections.common} onToggle={() => toggleSection("common")}>
         <Row label={t("wake_hotkey")} subtitle={t("hotkey_click_hint")}>
-          <HotkeyField t={t} value={hotkey} label={t("wake_hotkey")} onRecorded={recordWakeHotkey} />
+          <HotkeyField t={t} value={hotkey} label={t("wake_hotkey")} onRecorded={(next) => recordHotkey(next, false)} />
         </Row>
         <Row label={t("autostart")} hint={t("autostart_hint")}>
           <Toggle
@@ -276,6 +284,13 @@ const SettingsPage = ({
             ]}
           />
         </Row>
+        <Row label={t("update_automatic")} hint={t("update_automatic_hint")}>
+          <Toggle
+            label={t("update_automatic")}
+            checked={flag("app.update_check_enabled", true)}
+            onChange={(enabled) => save("app.update_check_enabled", String(enabled))}
+          />
+        </Row>
         {!accessibilityGranted && (
           <Row label={t("accessibility_permission")} hint={t("accessibility_permission_hint")}>
             <button
@@ -292,6 +307,17 @@ const SettingsPage = ({
       </Section>
 
       <Section title={t("section_interface")} open={!!openSections.interface} onToggle={() => toggleSection("interface")}>
+        <Row label={t("appearance")} column>
+          <Segmented
+            value={normalizeAppearance(values[APPEARANCE_SETTING_KEY])}
+            options={[
+              { value: "system", label: t("appearance_system") },
+              { value: "light", label: t("appearance_light") },
+              { value: "dark", label: t("appearance_dark") },
+            ]}
+            onChange={(value) => save(APPEARANCE_SETTING_KEY, value)}
+          />
+        </Row>
         <Row label={t("accent_color")} column>
           <div className="accent-swatches" role="radiogroup" aria-label={t("accent_color")}>
             {ACCENT_NAMES.map((name) => (
@@ -384,36 +410,14 @@ const SettingsPage = ({
       </Section>
 
       <Section title={t("section_paste")} open={!!openSections.paste} onToggle={() => toggleSection("paste")}>
-        <Row label={t("persistent_storage")} hint={t("persistent_hint")}>
-          <Toggle
-            label={t("persistent_storage")}
-            checked={flag("app.persistent", true)}
-            onChange={(enabled) => applyToggle("app.persistent", enabled, "set_persistence", { enabled })}
+        <Row label={t("sequential_paste_hotkey")} hint={t("sequential_paste_hotkey_inactive")}>
+          <HotkeyField
+            t={t}
+            value={sequentialHotkey}
+            label={t("sequential_paste_hotkey")}
+            onRecorded={(next) => recordHotkey(next, true)}
           />
         </Row>
-        {flag("app.persistent", true) && (
-          <Row label={t("persistent_limit_enabled")} hint={t("persistent_limit_enabled_hint")}>
-            <Toggle
-              label={t("persistent_limit_enabled")}
-              checked={flag("app.persistent_limit_enabled")}
-              onChange={(enabled) => save("app.persistent_limit_enabled", String(enabled))}
-            />
-          </Row>
-        )}
-        {flag("app.persistent", true) && flag("app.persistent_limit_enabled") && (
-          <Row label={t("persistent_limit")} hint={t("persistent_limit_hint")} child>
-            <input
-              className="glass-field is-number"
-              inputMode="numeric"
-              value={limitDraft}
-              onChange={(event) => setLimitDraft(event.target.value.replace(/\D/g, ""))}
-              onBlur={commitLimit}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") event.currentTarget.blur();
-              }}
-            />
-          </Row>
-        )}
         <Row label={t("delete_after_paste")} hint={t("delete_after_paste_hint")}>
           <Toggle
             label={t("delete_after_paste")}
@@ -440,7 +444,35 @@ const SettingsPage = ({
         )}
       </Section>
 
+      <Section title={t("section_privacy")} open={!!openSections.privacy} onToggle={() => toggleSection("privacy")}>
+        <IgnoredApps t={t} apps={ignoredApps.ignored} onAdd={() => setAppSelector("ignored")} onRemove={ignoredApps.remove} />
+        <Row label={t("download_remote_images")} hint={t("download_remote_images_hint")}>
+          <Toggle
+            label={t("download_remote_images")}
+            checked={downloadRemoteImages}
+            onChange={(enabled) => save("app.download_remote_images", String(enabled))}
+          />
+        </Row>
+        {downloadRemoteImages && (
+          <Row label={t("remote_image_max_mb")} hint={t("remote_image_max_mb_hint")} child column>
+            <Segmented
+              value={values["app.remote_image_max_mb"] ?? "8"}
+              options={["2", "4", "8", "16"].map((value) => ({ value, label: t("megabytes").replace("{count}", value) }))}
+              onChange={(value) => save("app.remote_image_max_mb", value)}
+            />
+          </Row>
+        )}
+      </Section>
+
       <Section title={t("section_data")} open={!!openSections.data} onToggle={() => toggleSection("data")}>
+        <Row label={t("persistent_storage")} hint={t("persistent_hint")}>
+          <Toggle
+            label={t("persistent_storage")}
+            checked={flag("app.persistent", true)}
+            onChange={(enabled) => applyToggle("app.persistent", enabled, "set_persistence", { enabled })}
+          />
+        </Row>
+        <StorageSettings settings={settings} pushToast={pushToast} openConfirm={openConfirm} closeConfirm={closeConfirm} />
         <Row label={t("data_path")} column>
           <code className="path-text">{dataPath}</code>
           <div className="inline-actions">
@@ -487,7 +519,15 @@ const SettingsPage = ({
           <img className="brand-logo" src={appLogo} alt="" draggable={false} />
           <span className="brand-name">DewClip</span>
         </div>
-        <div className="brand-version">{version}</div>
+        <UpdateSettings
+          t={t}
+          status={updates.snapshot}
+          checking={updates.manualChecking}
+          result={updates.manualResult}
+          onCheck={() => void updates.check()}
+          onView={updates.openDialog}
+          onOpenReleasePage={updates.openReleasePage}
+        />
         <div className="brand-author">by REXKEV214</div>
         <button type="button" className="link-button brand-link" onClick={() => void openUrl(GITHUB_URL)}>
           <FaviconGithub />
@@ -498,13 +538,20 @@ const SettingsPage = ({
       <AppSelectorModal
         show={appSelector}
         installedApps={installedApps}
-        theme=""
-        colorMode="light"
+        mode={pickingIgnoredApp ? "pick-app" : "default-app"}
+        excludePaths={pickingIgnoredApp ? ignoredApps.excludePaths : undefined}
         t={t}
         onClose={() => setAppSelector(null)}
-        onSave={(type, path) => save(`app.${type}`, path)}
+        onSave={(type, path) => {
+          if (type === "ignored") {
+            const name = installedApps.find((app) => app.value === path)?.label ?? appDisplayName(path);
+            ignoredApps.add(name, path);
+          } else {
+            save(`app.${type}`, path);
+          }
+        }}
         resetLabel={
-          appSelector && chosenApp(values, appSelector)
+          appSelector && !pickingIgnoredApp && chosenApp(values, appSelector)
             ? t(unchosenFallback(values, appSelector) === "text" ? "same_as_text_app" : "system_default")
             : undefined
         }

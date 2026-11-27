@@ -22,6 +22,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
+use crate::app::appearance::{self, EffectiveTheme};
 use crate::app_state::SettingsState;
 use crate::database::DbState;
 use crate::domain::models::ClipboardEntry;
@@ -186,6 +187,7 @@ struct CapsuleState {
     count: u32,
     /// The look its native views are set up for.
     applied_style: &'static str,
+    applied_theme: Option<EffectiveTheme>,
     seq: u64,
 }
 
@@ -196,6 +198,7 @@ static STATE: Mutex<CapsuleState> = Mutex::new(CapsuleState {
     geometry: None,
     count: 0,
     applied_style: "",
+    applied_theme: None,
     seq: 0,
 });
 
@@ -219,8 +222,10 @@ pub struct CapsulePayload {
     /// Thumbnail path of a copied image.
     pub image_path: Option<String>,
     pub file_count: usize,
+    pub sequential: Option<SequentialNotice>,
     // Filled in by `present`.
     pub style: String,
+    pub theme: EffectiveTheme,
     pub language: String,
     pub count: u32,
     /// The pill has just started growing (content waits for it).
@@ -231,7 +236,19 @@ pub struct CapsulePayload {
     pub top_inset: f64,
 }
 
-fn first_line_preview(content: &str) -> String {
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum SequentialNotice {
+    Queued { position: usize, new_round: bool },
+    Pasted { current: usize, total: usize },
+    Done { total: usize },
+    RoundDone { total: usize },
+    Skipped { remaining: usize, hotkey: Option<String>, round_ended: bool },
+    Empty,
+    Failed { reason: &'static str },
+}
+
+pub(crate) fn first_line_preview(content: &str) -> String {
     let line = content.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("");
     let mut preview: String = line.chars().take(PREVIEW_CHARS).collect();
     if line.chars().count() > PREVIEW_CHARS {
@@ -297,6 +314,7 @@ struct CopyNotification {
     entry: ClipboardEntry,
     style: &'static str,
     sequence: u64,
+    sequential: Option<SequentialNotice>,
 }
 
 static COPY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -304,6 +322,14 @@ static PENDING_COPY: (Mutex<Option<CopyNotification>>, Condvar) =
     (Mutex::new(None), Condvar::new());
 
 pub fn notify_copied(app: &AppHandle, entry: &ClipboardEntry) {
+    notify_copy(app, entry, None);
+}
+
+pub fn notify_sequential_queued(app: &AppHandle, entry: &ClipboardEntry, position: usize, new_round: bool) {
+    notify_copy(app, entry, Some(SequentialNotice::Queued { position, new_round }));
+}
+
+fn notify_copy(app: &AppHandle, entry: &ClipboardEntry, sequential: Option<SequentialNotice>) {
     let settings = app.state::<SettingsState>();
     if !settings.capsule_enabled.load(Ordering::Relaxed) {
         return;
@@ -316,6 +342,7 @@ pub fn notify_copied(app: &AppHandle, entry: &ClipboardEntry) {
         entry: entry.clone(),
         style,
         sequence,
+        sequential,
     });
     PENDING_COPY.1.notify_one();
     static WORKER: Once = Once::new();
@@ -328,7 +355,8 @@ pub fn notify_copied(app: &AppHandle, entry: &ClipboardEntry) {
                 .unwrap()
                 .take()
                 .expect("pending copy notification");
-            let payload = payload_for(&notification.app, &notification.entry);
+            let mut payload = payload_for(&notification.app, &notification.entry);
+            payload.sequential = notification.sequential;
             present(
                 &notification.app,
                 payload,
@@ -337,6 +365,14 @@ pub fn notify_copied(app: &AppHandle, entry: &ClipboardEntry) {
             );
         });
     });
+}
+
+pub fn notify_sequential(app: &AppHandle, notice: SequentialNotice, next: Option<(String, String)>) {
+    let style_setting = app.state::<SettingsState>().capsule_style.lock().unwrap().clone();
+    let (kind, preview) = next.unwrap_or_default();
+    let payload = CapsulePayload { kind, preview, sequential: Some(notice), ..Default::default() };
+    let sequence = COPY_SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1;
+    present(app, payload, normalize_style(&style_setting), sequence);
 }
 
 /// 设置页: show what the chosen look looks like.
@@ -372,6 +408,7 @@ fn window(app: &AppHandle) -> Option<WebviewWindow> {
 
 fn emit_show(app: &AppHandle, mut payload: CapsulePayload, style: &str, geometry: Geometry, count: u32, fresh: bool, seq: u64) {
     payload.style = style.to_string();
+    payload.theme = appearance::effective_theme(app);
     payload.language = language(app);
     payload.count = count;
     payload.fresh = fresh;
@@ -383,6 +420,10 @@ fn emit_show(app: &AppHandle, mut payload: CapsulePayload, style: &str, geometry
 }
 
 fn present(app: &AppHandle, payload: CapsulePayload, style: &'static str, sequence: u64) {
+    let duration = match payload.sequential {
+        Some(SequentialNotice::Queued { .. }) | None => show_for(app),
+        Some(_) => Duration::from_millis(1_600),
+    };
     let Some(win) = window(app) else { return };
     let handle = app.clone();
     let _ = win.clone().run_on_main_thread(move || {
@@ -391,55 +432,82 @@ fn present(app: &AppHandle, payload: CapsulePayload, style: &'static str, sequen
         }
         let Some(screen) = native::current_screen() else { return };
         let geometry = geometry_for(style, screen);
+        appearance::refresh_system_theme(&handle);
+        let theme = appearance::effective_theme(&handle);
+        let glass_theme = (style == STYLE_GLASS).then_some(theme);
 
         let mut st = state();
         st.seq += 1;
         let seq = st.seq;
         st.hide_gen += 1;
         let hide_gen = st.hide_gen;
-        let warm = st.visible && !st.hiding && st.applied_style == style && st.geometry == Some(geometry);
+        let restyle = st.applied_style != style || st.applied_theme != glass_theme;
+        let warm = st.visible && !st.hiding && !restyle && st.geometry == Some(geometry);
         if warm {
             // Already out: just the new content.
             st.count += 1;
             let count = st.count;
             drop(st);
             emit_show(&handle, payload, style, geometry, count, false, seq);
-            schedule_hide(handle, hide_gen);
+            schedule_hide(handle, hide_gen, duration);
             return;
         }
 
         // Shrinking with the same look and place: grow back from where the
         // animation is now. Otherwise start over from the collapsed shape.
-        let restyle = st.applied_style != style;
         let resume = st.visible && !restyle && st.geometry == Some(geometry);
         st.visible = true;
         st.hiding = false;
         st.count = 1;
         st.geometry = Some(geometry);
         st.applied_style = style;
+        st.applied_theme = glass_theme;
         drop(st);
 
         if restyle {
-            native::apply_style(&win, style);
+            native::apply_style(&win, style, theme);
         }
         if !resume {
             native::set_frame(&win, geometry.window);
             native::set_mask(&win, geometry.collapsed, geometry.notch, None);
         }
-        native::order_front(&win);
         emit_show(&handle, payload, style, geometry, 1, true, seq);
+        native::order_front(&win);
         native::set_mask(&win, geometry.expanded, geometry.notch, Some(EXPAND));
-        schedule_hide(handle, hide_gen);
+        schedule_hide(handle, hide_gen, duration);
     });
+}
+
+fn capsule_glass_tint(theme: EffectiveTheme) -> (u8, u8, u8, u8) {
+    match theme {
+        EffectiveTheme::Light => (255, 255, 255, 90),
+        EffectiveTheme::Dark => (24, 24, 28, 130),
+    }
+}
+
+/// Refresh the material behind the existing mask on the main thread.
+pub fn refresh_appearance(app: &AppHandle, theme: EffectiveTheme) {
+    let Some(win) = window(app) else { return };
+    let mut st = state();
+    if st.applied_style != STYLE_GLASS || st.applied_theme == Some(theme) {
+        return;
+    }
+    if !st.visible {
+        st.applied_theme = None;
+        return;
+    }
+    st.applied_theme = Some(theme);
+    drop(st);
+    native::apply_style(&win, STYLE_GLASS, theme);
 }
 
 fn show_for(app: &AppHandle) -> Duration {
     Duration::from_millis(app.state::<SettingsState>().capsule_duration_ms.load(Ordering::Relaxed))
 }
 
-fn schedule_hide(app: AppHandle, hide_gen: u64) {
+fn schedule_hide(app: AppHandle, hide_gen: u64, duration: Duration) {
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(show_for(&app)).await;
+        tokio::time::sleep(duration).await;
         begin_hide(app, hide_gen);
     });
 }
@@ -562,7 +630,7 @@ pub fn create_window(app: &AppHandle) {
 
 #[cfg(target_os = "macos")]
 mod native {
-    use super::{Curve, Mask, Rect, ScreenInfo, PILL_SIZE, STYLE_GLASS};
+    use super::{capsule_glass_tint, Curve, EffectiveTheme, Mask, Rect, ScreenInfo, PILL_SIZE, STYLE_GLASS};
     use objc2::msg_send;
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
@@ -713,7 +781,7 @@ mod native {
 
     /// Native views for a look: Liquid Glass (frosted glass before macOS 26),
     /// or a black fill. The mask cuts the pill out of either. Main thread only.
-    pub fn apply_style(win: &WebviewWindow, style: &str) {
+    pub fn apply_style(win: &WebviewWindow, style: &str, theme: EffectiveTheme) {
         use window_vibrancy::{
             apply_liquid_glass, apply_vibrancy, clear_liquid_glass, clear_vibrancy, LiquidGlassOptions,
             NSGlassEffectViewStyle, NSVisualEffectMaterial, NSVisualEffectState,
@@ -734,7 +802,7 @@ mod native {
         let options = LiquidGlassOptions::new(NSGlassEffectViewStyle::Regular)
             .radius(radius)
             .opaque(false)
-            .tint_color((255, 255, 255, 90));
+            .tint_color(capsule_glass_tint(theme));
         if apply_liquid_glass(win, options).is_err() {
             let _ = apply_vibrancy(
                 win,
@@ -760,14 +828,14 @@ mod native {
 
 #[cfg(not(target_os = "macos"))]
 mod native {
-    use super::{Curve, Mask, Rect, ScreenInfo};
+    use super::{Curve, EffectiveTheme, Mask, Rect, ScreenInfo};
     use tauri::WebviewWindow;
     pub fn current_screen() -> Option<ScreenInfo> {
         None
     }
     pub fn set_frame(_: &WebviewWindow, _: Rect) {}
     pub fn set_mask(_: &WebviewWindow, _: Mask, _: bool, _: Option<Curve>) {}
-    pub fn apply_style(_: &WebviewWindow, _: &str) {}
+    pub fn apply_style(_: &WebviewWindow, _: &str, _: EffectiveTheme) {}
     pub fn order_front(_: &WebviewWindow) {}
     pub fn order_out(_: &WebviewWindow) {}
 }
@@ -775,6 +843,12 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glass_capsule_tint_matches_the_effective_theme() {
+        assert_eq!(capsule_glass_tint(EffectiveTheme::Light), (255, 255, 255, 90));
+        assert_eq!(capsule_glass_tint(EffectiveTheme::Dark), (24, 24, 28, 130));
+    }
 
     fn screen(notch: Option<(f64, f64)>) -> ScreenInfo {
         ScreenInfo { x: 0.0, y: 0.0, width: 1512.0, height: 982.0, visible_top: 982.0 - 37.0, notch }

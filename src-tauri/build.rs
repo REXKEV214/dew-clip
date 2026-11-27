@@ -3,16 +3,17 @@ use std::process::Command;
 
 fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
-        build_swift_translate();
+        build_swift_bridge();
     }
     tauri_build::build()
 }
 
-/// 翻译 uses Apple's Translation framework, which only has a Swift interface:
-/// swift/Translate.swift is built into a static library with C entry points.
-fn build_swift_translate() {
-    const SOURCE: &str = "swift/Translate.swift";
-    println!("cargo:rerun-if-changed={SOURCE}");
+/// The native Translation and URLSession bridges share a static Swift library.
+fn build_swift_bridge() {
+    const SOURCES: [&str; 2] = ["swift/Translate.swift", "swift/UpdateCheck.swift"];
+    for source in SOURCES {
+        println!("cargo:rerun-if-changed={source}");
+    }
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
@@ -31,12 +32,12 @@ fn build_swift_translate() {
         .args(["-swift-version", "5", "-target", &target, "-module-name", "DewClipTranslate"])
         .arg("-module-cache-path")
         .arg(out_dir.join("swift-module-cache"))
-        .arg(SOURCE)
+        .args(SOURCES)
         .arg("-o")
         .arg(&library)
         .status()
         .expect("failed to run swiftc (Xcode command line tools needed)");
-    assert!(status.success(), "swiftc failed for {SOURCE}");
+    assert!(status.success(), "swiftc failed for the native bridges");
 
     let sdk = String::from_utf8(
         Command::new("xcrun")

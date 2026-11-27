@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::{App, AppHandle, Manager};
 
+use crate::app::appearance::{self, AppearancePreference};
 use crate::app::window_manager::{maybe_open_devtools, toggle_window};
 use crate::app_state::{AppDataDir, EncryptionQueueState, PasteQueue, SessionHistory, SettingsState};
 use crate::database::{self, DbState};
@@ -14,9 +15,10 @@ use crate::infrastructure::repository::settings_repo::{
 use crate::infrastructure::repository::tag_repo::SqliteTagRepository;
 use crate::services::encryption_queue::init_encryption_queue;
 use crate::services::sensitive_align::spawn_sensitive_alignment;
+use crate::services::updater;
 
 #[cfg(target_os = "macos")]
-fn register_macos_wake_hotkey_refresh(app_handle: AppHandle) {
+fn register_macos_wake_handler(app_handle: AppHandle) {
     use block2::RcBlock;
     use objc2_app_kit::{NSWorkspace, NSWorkspaceDidWakeNotification};
     use objc2_foundation::NSNotification;
@@ -25,6 +27,15 @@ fn register_macos_wake_hotkey_refresh(app_handle: AppHandle) {
 
     let center = NSWorkspace::sharedWorkspace().notificationCenter();
     let wake_handler = RcBlock::new(move |_notification: NonNull<NSNotification>| {
+        let appearance_handle = app_handle.clone();
+        if let Err(error) = app_handle.run_on_main_thread(move || {
+            appearance::refresh_system_theme(&appearance_handle);
+        }) {
+            crate::error!("[appearance] Could not schedule appearance refresh after wake: {error}");
+        }
+        crate::services::recording_pause::check_expired_pause(&app_handle);
+        updater::check_after_wake(app_handle.clone());
+        tauri::async_runtime::spawn(crate::services::paste_queue::check_idle_after_wake(app_handle.clone()));
         let app_handle = app_handle.clone();
         std::thread::spawn(move || {
             // macOS may need a short moment to restore Carbon event hotkeys after wake.
@@ -82,8 +93,6 @@ fn register_macos_pinned_escape_monitor(app_handle: AppHandle) {
 pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
 
-    #[cfg(target_os = "macos")]
-    register_macos_wake_hotkey_refresh(app_handle.clone());
     #[cfg(target_os = "macos")]
     register_macos_pinned_escape_monitor(app_handle.clone());
     #[cfg(target_os = "macos")]
@@ -149,6 +158,8 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     crate::app::commands::thumbnail_cmd::init_thumbnail_cache(app.handle());
     crate::app::data_directory::prepare_session(&app_dir)?;
     setup_state(app, conn_arc.clone(), &settings, app_dir.clone());
+    app.manage(updater::UpdateState::load(app.package_info().version.clone(), &conn_arc.lock().unwrap())?);
+    app.manage(crate::services::recording_pause::RecordingPause::default());
     crate::services::clipboard::start_session_file_sweeper(app.handle().clone());
     app.manage(EncryptionQueueState(init_encryption_queue(app_handle.clone())));
     spawn_sensitive_alignment(app_handle.clone());
@@ -157,14 +168,18 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     apply_initial_dock_visibility(app, &settings);
 
     // 7. Window Initialization (Pinned/Focus)
-    setup_main_window(app, &settings);
+    appearance::init(&app_handle, settings.appearance);
+    setup_main_window(app, &settings)?;
     crate::app::capsule::create_window(&app_handle);
 
     // 8. Background Services & Monitors
     start_services(app, &settings, app_handle.clone());
 
     // 9. Tray Setup
-    setup_tray(app, settings.hide_tray_icon);
+    crate::app::tray::setup_tray(app, settings.hide_tray_icon)?;
+    #[cfg(target_os = "macos")]
+    register_macos_wake_handler(app_handle.clone());
+    updater::start_scheduler(app_handle, settings.first_open);
 
     Ok(())
 }
@@ -249,11 +264,15 @@ pub(crate) fn portable_data_dir() -> Option<std::path::PathBuf> {
 
 pub struct StartupSettings {
     pub persistent: bool,
+    pub history_retention_days: u64,
+    pub storage_limit_mb: u64,
+    pub download_remote_images: bool,
+    pub update_check_enabled: bool,
+    pub remote_image_max_bytes: u64,
     pub silent_start: bool,
     pub delete_after_paste: bool,
     pub cleanup_rules: String,
     pub app_cleanup_policies: String,
-    pub sequential_mode: bool,
     pub sequential_hotkey: String,
     pub hide_tray_icon: bool,
     pub hide_dock_icon: bool,
@@ -265,6 +284,7 @@ pub struct StartupSettings {
     pub window_pin_mode: WindowPinMode,
     /// No window has been shown yet: a new user, or settings just restored.
     pub first_open: bool,
+    pub appearance: AppearancePreference,
     pub glass_level: u64,
     pub capsule_enabled: bool,
     pub capsule_style: String,
@@ -290,27 +310,30 @@ pub(crate) fn load_settings(repo: &SqliteSettingsRepository) -> rusqlite::Result
     };
     Ok(StartupSettings {
         persistent: get("app.persistent", "true") != "false",
+        history_retention_days: get("app.history_retention_days", "0").parse().unwrap_or(0),
+        storage_limit_mb: get("app.storage_limit_mb", "0").parse().unwrap_or(0),
+        download_remote_images: flag("app.download_remote_images", true),
+        update_check_enabled: flag(updater::ENABLED_KEY, true),
+        remote_image_max_bytes: crate::database::remote_image_max_bytes(&get("app.remote_image_max_mb", "8")),
         silent_start: flag("app.silent_start", false),
         delete_after_paste: flag("app.delete_after_paste", false),
         cleanup_rules: get("app.cleanup_rules", ""),
         app_cleanup_policies: get("app.app_cleanup_policies", "[]"),
-        // 顺序粘贴 has no switch in Settings any more: always off, so a mode
-        // turned on earlier can't keep its hotkey with no way to turn it off.
-        sequential_mode: false,
         sequential_hotkey: get("app.sequential_hotkey", "Alt+V"),
         hide_tray_icon: flag("app.hide_tray_icon", false),
         hide_dock_icon: flag("app.hide_dock_icon", false),
         window_pinned: flag("app.window_pinned", false),
         window_width: size("app.window_logical_width"),
         window_height: size("app.window_logical_height"),
-        main_hotkey: get("app.hotkey", "Shift+Z"),
-        first_open: !flag("app.onboarding_done", false),
+        main_hotkey: get("app.hotkey", "Alt+Z"),
+        first_open: !flag(updater::ONBOARDING_DONE_KEY, false),
         window_position_mode: crate::app::window_manager::normalize_position_mode(&get(
             "app.window_position_mode",
             "follow_mouse",
         ))
         .to_string(),
         window_pin_mode: WindowPinMode::from_setting(&get(PIN_MODE_KEY, "always_on_top")),
+        appearance: AppearancePreference::from_setting(&get(appearance::SETTING_KEY, "system")),
         glass_level: get("app.glass_level", "35")
             .parse::<u64>()
             .map(|v| v.min(100))
@@ -356,19 +379,24 @@ fn setup_state(
 pub(crate) fn settings_state_from(s: &StartupSettings) -> SettingsState {
     SettingsState {
         persistent: AtomicBool::new(s.persistent),
+        history_retention_days: AtomicU64::new(s.history_retention_days),
+        storage_limit_mb: AtomicU64::new(s.storage_limit_mb),
+        download_remote_images: AtomicBool::new(s.download_remote_images),
+        update_check_enabled: AtomicBool::new(s.update_check_enabled),
+        remote_image_max_bytes: AtomicU64::new(s.remote_image_max_bytes),
         capture_files: AtomicBool::new(true),
         capture_rich_text: AtomicBool::new(true),
         silent_start: AtomicBool::new(s.silent_start),
         delete_after_paste: AtomicBool::new(s.delete_after_paste),
         cleanup_rules: std::sync::Mutex::new(s.cleanup_rules.clone()),
         app_cleanup_policies: std::sync::Mutex::new(s.app_cleanup_policies.clone()),
-        sequential_mode: AtomicBool::new(s.sequential_mode),
         sequential_paste_hotkey: std::sync::Mutex::new(s.sequential_hotkey.clone()),
         hide_tray_icon: AtomicBool::new(s.hide_tray_icon),
         hide_dock_icon: AtomicBool::new(s.hide_dock_icon),
         main_hotkey: std::sync::Mutex::new(s.main_hotkey.clone()),
         window_position_mode: std::sync::Mutex::new(s.window_position_mode.clone()),
         window_pin_mode: std::sync::Mutex::new(s.window_pin_mode),
+        appearance: std::sync::Mutex::new(s.appearance),
         glass_level: AtomicU64::new(s.glass_level),
         capsule_enabled: AtomicBool::new(s.capsule_enabled),
         capsule_style: std::sync::Mutex::new(s.capsule_style.clone()),
@@ -398,22 +426,23 @@ fn set_window_all_spaces(window: &tauri::WebviewWindow) {
 
 
 
-fn setup_main_window(app: &App, s: &StartupSettings) {
+fn setup_main_window(app: &App, s: &StartupSettings) -> Result<(), Box<dyn std::error::Error>> {
     let effective_pinned = s.window_pinned;
     WINDOW_PINNED.store(effective_pinned, Ordering::Relaxed);
 
-    if let Some(window) = app.get_webview_window("main") {
-        if let (Some(w), Some(h)) = (s.window_width, s.window_height) {
-            if w >= 300.0 && h >= 300.0 {
-                let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                    width: w,
-                    height: h,
-                }));
-            }
+    let config = app.config().app.windows.iter().find(|window| window.label == "main")
+        .expect("Missing main window configuration");
+    let window = tauri::WebviewWindowBuilder::from_config(app, config)?.build()?;
+    if let (Some(w), Some(h)) = (s.window_width, s.window_height) {
+        if w >= 300.0 && h >= 300.0 {
+            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                width: w,
+                height: h,
+            }));
         }
-        // Space flags before panel conversion.
-        set_window_all_spaces(&window);
     }
+    // Space flags before panel conversion.
+    set_window_all_spaces(&window);
 
     // Handle silent start
     let args: Vec<String> = std::env::args().collect();
@@ -421,21 +450,10 @@ fn setup_main_window(app: &App, s: &StartupSettings) {
         args.contains(&"--autostart".to_string()) || args.contains(&"--minimized".to_string());
     let should_show_main = !is_autostart && !s.silent_start;
 
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-
-    if !should_show_main {
-        // The main window is created visible (tauri.conf.json), so autostart
-        // and silent start must hide it before the panel conversion.
-        let _ = window.hide();
-    }
-
-    // Convert AFTER final show/hide work — to_panel drops tao ivars.
     if let Err(err) = crate::infrastructure::macos_api::window::setup_clipboard_panel(&window) {
         eprintln!("[macos-overlay] setup_clipboard_panel failed: {err}");
     }
-    crate::app::window_manager::apply_window_vibrancy(&app.handle().clone(), &window);
+    crate::app::window_manager::apply_window_vibrancy(app.handle(), &window);
 
     if should_show_main {
         if s.first_open {
@@ -444,9 +462,14 @@ fn setup_main_window(app: &App, s: &StartupSettings) {
             crate::app::window_manager::position_window_for_show(&app.handle().clone(), &window);
         }
         crate::infrastructure::macos_api::window::configure_overlay_space_behavior(&window);
-        let _ = crate::infrastructure::macos_api::window::show_clipboard_panel(&app.handle().clone());
+        if !panel::show_clipboard_panel(app.handle()) {
+            appearance::refresh_system_theme(app.handle());
+            window.show()?;
+            let _ = window.set_focus();
+        }
         maybe_open_devtools(&window);
     }
+    Ok(())
 }
 
 /// New installs launch at login. Runs once, on the first start of a fresh
@@ -514,99 +537,29 @@ fn start_services(app: &App, s: &StartupSettings, app_handle: AppHandle) {
 }
 
 
-fn setup_tray(app: &App, hide_tray: bool) {
-    use tauri::menu::{Menu, MenuItem};
-    use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
-
-    let english = app
-        .state::<DbState>()
-        .settings_repo
-        .get("app.language")
-        .ok()
-        .flatten()
-        .map(|lang| lang == "en")
-        .unwrap_or(false);
-    let (show_label, quit_label) = if english {
-        ("Open DewClip", "Quit")
-    } else {
-        ("打开 DewClip", "退出")
-    };
-    let show_i = MenuItem::with_id(app, "show", show_label, true, None::<&str>).unwrap();
-    let quit_i = MenuItem::with_id(app, "quit", quit_label, true, None::<&str>).unwrap();
-    let menu = Menu::with_items(app, &[&show_i, &quit_i]).unwrap();
-    let icon =
-        tauri::image::Image::from_bytes(include_bytes!("../../icons/tray-icon.png")).unwrap();
-
-    let mut tray_builder = TrayIconBuilder::with_id("main_tray")
-        .icon(icon)
-        .tooltip("DewClip")
-        .show_menu_on_left_click(false)
-        .menu(&menu)
-        .on_menu_event(|app, event| {
-            if event.id.as_ref() == "show" {
-                let _ = crate::app::window_manager::focus_clipboard_window(app.clone());
-            } else if event.id.as_ref() == "quit" {
-                crate::app::system::request_app_exit(app);
-            }
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                ..
-            } = event
-            {
-                // Same intentional-open path as Dock reopen (make-key + LAST_SHOW).
-                let _ = crate::app::window_manager::focus_clipboard_window(tray.app_handle().clone());
-            }
-        });
-
-    #[cfg(target_os = "macos")]
-    {
-        tray_builder = tray_builder.icon_as_template(true);
-    }
-
-    let tray = tray_builder.build(app).expect("Failed to build tray");
-
-    let _ = tray.set_visible(!hide_tray);
-    app.manage(tray);
-}
-
-
-
-
-
 pub fn handle_global_shortcut(
     app: &AppHandle,
     shortcut: &tauri_plugin_global_shortcut::Shortcut,
     state: tauri_plugin_global_shortcut::ShortcutState,
 ) {
-    use tauri_plugin_global_shortcut::Shortcut;
+    use crate::app::commands::hotkey_cmd::parse_shortcut;
     use tauri_plugin_global_shortcut::ShortcutState;
     let settings = app.state::<SettingsState>();
 
-    if state == ShortcutState::Pressed {
-        if let Ok(main_s) = {
-            let val = settings.main_hotkey.lock().unwrap().clone();
-            val.replace("Win", "Super").parse::<Shortcut>()
-        } {
-            if shortcut == &main_s {
-                toggle_window(app);
-                return;
-            }
+    let main = parse_shortcut(&settings.main_hotkey.lock().unwrap());
+    if main.as_ref() == Some(shortcut) {
+        if state == ShortcutState::Pressed {
+            toggle_window(app);
         }
-
-    } else if state == ShortcutState::Released {
-        if let Ok(seq_s) = {
-            let val = settings.sequential_paste_hotkey.lock().unwrap().clone();
-            val.replace("Win", "Super").parse::<Shortcut>()
-        } {
-            if shortcut == &seq_s {
-                if settings.sequential_mode.load(Ordering::Relaxed) {
-                    crate::services::paste_queue::paste_next_step(app.clone());
-                }
+    } else if state == ShortcutState::Released
+        && parse_shortcut(&settings.sequential_paste_hotkey.lock().unwrap()).as_ref() == Some(shortcut)
+    {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = crate::services::paste_queue::paste_next_step(app).await {
+                crate::error!("Sequential paste: {error}");
             }
-        }
-
+        });
     }
 }
 
@@ -614,15 +567,56 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     if window.label() != "main" {
         return;
     }
+    use tauri::Emitter;
     match event {
         tauri::WindowEvent::Focused(false) => {
             panel::remember_frontmost_external_app();
         }
         tauri::WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
-            let _ = crate::app::window_manager::hide_window_cmd(window.app_handle().clone());
+            let _ = window.emit_to("main", "window-close-requested", ());
         }
         _ => {}
+    }
+}
+
+#[cfg(target_os = "macos")]
+const CLOSE_WINDOW_MENU: &str = "close_panel_window";
+
+#[cfg(target_os = "macos")]
+pub fn application_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, WINDOW_SUBMENU_ID};
+
+    let menu = Menu::default(app)?;
+    let close_text = PredefinedMenuItem::close_window(app, None)?.text()?;
+    for item in menu.items()? {
+        let Some(submenu) = item.as_submenu() else { continue };
+        if submenu.id().as_ref() != WINDOW_SUBMENU_ID && submenu.text()? != "File" {
+            continue;
+        }
+        for (index, item) in submenu.items()?.iter().enumerate() {
+            let Some(predefined) = item.as_predefined_menuitem() else { continue };
+            if predefined.text()? == close_text {
+                submenu.remove_at(index)?;
+                // Keep the native action, but let WKWebView receive the key for IME and hotkey recording.
+                let close = MenuItem::with_id(app, CLOSE_WINDOW_MENU, &close_text, true, None::<&str>)?;
+                submenu.insert(&close, index)?;
+                break;
+            }
+        }
+    }
+    Ok(menu)
+}
+
+#[cfg(target_os = "macos")]
+pub fn handle_application_menu(app: &AppHandle, event: tauri::menu::MenuEvent) {
+    use tauri::Emitter;
+    use tauri_nspanel::ManagerExt;
+
+    if event.id.as_ref() == CLOSE_WINDOW_MENU
+        && app.get_webview_panel("main").is_ok_and(|panel| panel.as_panel().isKeyWindow())
+    {
+        let _ = app.emit_to("main", "window-close-requested", ());
     }
 }
 

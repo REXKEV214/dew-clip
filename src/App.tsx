@@ -2,30 +2,38 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import AppHeader from "./features/app/AppHeader";
 import SearchBox, { type SearchBoxHandle } from "./features/app/SearchBox";
 import TypeTabs from "./features/app/TypeTabs";
 import FixedPositionBanner from "./features/app/FixedPositionBanner";
+import RecordingPauseBanner, { useRecordingPause } from "./features/app/RecordingPauseBanner";
 import { useSettings } from "./features/app/useSettings";
 import { useOverlays } from "./features/app/useOverlays";
 import { useHistory } from "./features/app/useHistory";
+import { useHistorySelection } from "./features/app/useHistorySelection";
 import { useSidePanel } from "./features/app/useSidePanel";
 import { usePasteActions } from "./features/app/usePasteActions";
-import { useKeyboard } from "./features/app/useKeyboard";
+import { hasOpenDialog, useKeyboard } from "./features/app/useKeyboard";
+import { useWindowClose, type UnsavedChangesHandle } from "./features/app/useWindowClose";
+import { useUpdateStatus } from "./features/app/useUpdateStatus";
+import { UpdateBanner, UpdateDialog } from "./features/app/UpdateNotice";
+import { useShortcutBadges } from "./features/app/useShortcutBadges";
 import ClipboardCard from "./features/clipboard/ClipboardCard";
 import ClipboardList, { type ClipboardListHandle } from "./features/clipboard/ClipboardList";
-import FavoritesPanel from "./features/favorites/FavoritesPanel";
+import FavoritesPanel, { type FavoritesPanelHandle } from "./features/favorites/FavoritesPanel";
 import EditPanel from "./features/edit/EditPanel";
 import TranslatePanel from "./features/translate/TranslatePanel";
 import type { TranslationConfig } from "./features/translate/config";
 import BatchPanel from "./features/batch/BatchPanel";
+import QueuePanel from "./features/queue/QueuePanel";
+import { useSequentialQueue } from "./features/queue/useSequentialQueue";
 import {
   allVisibleSelected,
   applyEntryStates,
   batchDeleteMessage,
   deletionRequest,
   entryKey,
-  indexOfEntry,
   refreshSelection,
   selectAllVisible,
   selectionCounts,
@@ -34,21 +42,27 @@ import {
   type EntryState,
 } from "./features/batch/batchSelection";
 import PreviewPanel from "./features/preview/PreviewPanel";
-import { useSpacePreview } from "./features/preview/useSpacePreview";
+import { panelAfterPreview, useSpacePreview } from "./features/preview/useSpacePreview";
 import SettingsPage from "./features/settings/components/SettingsPage";
+import { useIgnoredApps } from "./features/settings/useIgnoredApps";
 import PermissionOnboarding from "./shared/components/PermissionOnboarding";
 import { ConfirmDialog, ToastContainer } from "./shared/components/Overlays";
 import { useContextMenuBlock } from "./shared/hooks/useContextMenuBlock";
 import { useFocusCoordinator } from "./shared/hooks/useFocusCoordinator";
+import { useLiveSearch } from "./shared/hooks/useLiveSearch";
 import { isTextEntry, type TypeFilter } from "./shared/lib/clipboardTypes";
 import { showNativeMenu, type NativeMenuItem } from "./shared/lib/nativeMenu";
 import { isTauriRuntime } from "./shared/lib/tauriRuntime";
-import type { ClipboardEntry, WindowPinMode } from "./shared/types";
+import { getHotkeyDisplayTokens } from "./shared/lib/hotkeyDisplay";
+import { formatError } from "./shared/lib/errorMessage";
+import { mirrorAppearance } from "./shared/lib/appearance";
+import type { ClipboardEntry, SidePanelKind, WindowPinMode } from "./shared/types";
 
 /** How much the CSS tint shows on systems with frosted glass only. */
 const FROSTED_TINT_MAX = 0.72;
 /** Longer than the side panel's animation, so its in-between widths aren't saved. */
 const WINDOW_SIZE_SAVE_DELAY_MS = 500;
+const SEARCH_DELAY_MS = 150;
 const PIN_MODE_KEY = "app.window_pin_mode";
 
 const normalizePinMode = (value?: string): WindowPinMode => value === "normal" ? "normal" : "always_on_top";
@@ -60,13 +74,22 @@ const App = () => {
   const settings = useSettings();
   const { t, flag, values, ready, save, remember } = settings;
   const { toasts, pushToast, confirmDialog, openConfirm, closeConfirm } = useOverlays(t);
+  const ignoredApps = useIgnoredApps(settings, pushToast);
+  const addIgnoredApp = ignoredApps.add;
+  const recordingPause = useRecordingPause();
+  const queue = useSequentialQueue();
+  const sequentialActive = queue.kind !== "inactive";
+  const sequentialActiveRef = useRef(sequentialActive);
+  sequentialActiveRef.current = sequentialActive;
+  const sequentialHotkey = getHotkeyDisplayTokens(values["app.sequential_hotkey"] ?? "Alt+V", { preferMacSymbols: true })
+    .map(({ label }) => label).join("");
 
   const [showSettings, setShowSettings] = useState(false);
-  const [draft, setDraft] = useState("");
-  const [search, setSearch] = useState("");
+  const showSettingsRef = useRef(showSettings);
+  showSettingsRef.current = showSettings;
+  const liveSearch = useLiveSearch(SEARCH_DELAY_MS);
+  const { draft, search, clear: resetSearch } = liveSearch;
   const [typeFilter, setTypeFilter] = useState<TypeFilter | null>(null);
-  // The entry picked with the arrow keys, not its row: rows shift as copies come and go.
-  const [selectedKey, setSelectedKey] = useState<EntryKey | null>(null);
   const [isWindowPinned, setIsWindowPinned] = useState(false);
   const pinMode = normalizePinMode(values[PIN_MODE_KEY]);
   const pinModeRef = useRef(pinMode);
@@ -78,6 +101,9 @@ const App = () => {
     setIsWindowPinned(pinned);
   }, []);
   const [settingFixedPosition, setSettingFixedPosition] = useState(false);
+  const updateError = () => pushToast(t("update_failed"));
+  const updates = useUpdateStatus(() => !settingFixedPosition && !hasOpenDialog(), updateError);
+  const { dialogRelease, snapshot: updateStatus } = updates;
   const [editing, setEditing] = useState<ClipboardEntry | null>(null);
   const [batchItems, setBatchItems] = useState<ClipboardEntry[]>([]);
   const [batchDeleting, setBatchDeleting] = useState(false);
@@ -100,39 +126,46 @@ const App = () => {
     ready
   );
   const { panel, open: openPanel, close: closePanel } = useSidePanel();
+  const batchMode = panel.kind === "batch";
+  const searchPending = draft.trim() !== search || !settled;
+  const openQueuePanel = useCallback(() => {
+    setShowSettings(false);
+    setEditing(null);
+    setBatchItems([]);
+    setPreviewEntry(null);
+    void openPanel("queue");
+  }, [openPanel]);
   const itemsRef = useRef(items);
   itemsRef.current = items;
   const batchItemsRef = useRef(batchItems);
   batchItemsRef.current = batchItems;
 
-  const selectedIndex = useMemo(() => indexOfEntry(items, selectedKey), [items, selectedKey]);
-  const setSelectedIndex = useCallback((index: number | null) => {
-    const entry = index === null ? undefined : itemsRef.current[index];
-    setSelectedKey(entry ? entryKey(entry) : null);
-  }, []);
-  // The picked entry is gone (deleted, or not in this list): nothing stays picked.
-  useEffect(() => {
-    if (selectedKey && selectedIndex === null) setSelectedKey(null);
-  }, [selectedIndex, selectedKey]);
+  const { selectedIndex, setSelectedIndex, clearSelection } = useHistorySelection(
+    items, search, typeFilter, Boolean(search) && !searchPending && !batchMode
+  );
 
   const deleteAfterPaste = flag("app.delete_after_paste");
   const moveToTopAfterPaste = flag("app.move_to_top_after_paste", true);
 
-  const afterPaste = useCallback(() => {
-    setDraft("");
-    setSearch("");
-    setSelectedKey(null);
-  }, []);
+  const clearSearch = useCallback(() => {
+    resetSearch();
+    clearSelection();
+  }, [clearSelection, resetSearch]);
 
-  const { paste, pasteImageText, failed } = usePasteActions({
+  const { paste, pasteImageText, copyOnly, failed } = usePasteActions({
     t,
     pushToast,
     deleteAfterPaste,
     moveToTopAfterPaste,
-    afterPaste,
+    afterPaste: clearSearch,
   });
-
-  const batchMode = panel.kind === "batch";
+  const sequentialFailed = useCallback((error: unknown) => {
+    const message = String(error);
+    const localized = ["sequential_inactive", "sequential_queue_changed", "sequential_release_modifiers"]
+      .find((key) => message.includes(key));
+    if (localized) pushToast(t(localized), 3000);
+    else failed(error);
+  }, [failed, pushToast, t]);
 
   const toggleBatch = useCallback((item: ClipboardEntry) => {
     setBatchItems((prev) =>
@@ -158,20 +191,20 @@ const App = () => {
   const startBatch = useCallback(
     (item: ClipboardEntry) => {
       setEditing(null);
-      setSelectedKey(null);
+      clearSelection();
       setBatchItems([item]);
       void openPanel("batch");
     },
-    [openPanel]
+    [clearSelection, openPanel]
   );
 
   // Cmd+A on the list.
   const startBatchSelectAll = useCallback(() => {
     setEditing(null);
-    setSelectedKey(null);
+    clearSelection();
     setBatchItems(selectAllVisible([], itemsRef.current));
     void openPanel("batch");
-  }, [openPanel]);
+  }, [clearSelection, openPanel]);
 
   const toggleSelectAll = useCallback(() => {
     setBatchItems((prev) => toggleSelectAllVisible(prev, itemsRef.current));
@@ -237,10 +270,22 @@ const App = () => {
       } else {
         menu = [favorite("add_favorite_file"), batch];
       }
+      if (sequentialActive) {
+        menu.push({
+          text: t("sequential_add_to_queue"),
+          action: () => void invoke("enqueue_sequential_entry", { entry: entryKey(item) }).catch(sequentialFailed),
+        });
+      }
       const share: NativeMenuItem = { text: t("share"), action: () => shareEntry(item) };
-      void showNativeMenu([open, ...menu, share]);
+      const path = item.source_app_path?.trim();
+      const ignoreApp: NativeMenuItem = {
+        text: t("stop_recording_this_app"),
+        enabled: Boolean(path),
+        action: path ? () => addIgnoredApp(item.source_app, path, t("ignored_apps_added")) : undefined,
+      };
+      void showNativeMenu([open, ...menu, ignoreApp, share]);
     },
-    [addFavorite, paste, pushToast, shareEntry, startBatch, t]
+    [addFavorite, addIgnoredApp, paste, pushToast, sequentialActive, sequentialFailed, shareEntry, startBatch, t]
   );
 
   const pasteImageTextEntry = useCallback(
@@ -293,7 +338,29 @@ const App = () => {
     void closePanel();
   }, [closePanel]);
 
+  const previousQueueKind = useRef(queue.kind);
+  useEffect(() => {
+    if (previousQueueKind.current === queue.kind) return;
+    previousQueueKind.current = queue.kind;
+    if (!sequentialActive) {
+      if (panel.kind === "queue") closeSidePanel();
+      return;
+    }
+    if (isTauriRuntime()) {
+      void getCurrentWindow().isVisible().then((visible) => {
+        if (visible && sequentialActiveRef.current) openQueuePanel();
+      }).catch(console.error);
+    }
+  }, [closeSidePanel, openQueuePanel, panel.kind, queue.kind, sequentialActive]);
+
+  const stopSequential = () => void invoke("stop_sequential_session").catch(sequentialFailed);
+  const startSequentialFromBatch = async (entries: EntryKey[]) => {
+    await invoke("start_sequential_from_entries", { entries });
+    if (windowPinnedRef.current) openQueuePanel();
+  };
+
   const batchDeletingRef = useRef(false);
+  const batchPastingRef = useRef(false);
   const deleteBatch = useCallback(
     async (frozen: EntryState[]) => {
       batchDeletingRef.current = true;
@@ -341,12 +408,12 @@ const App = () => {
     });
   }, [closeConfirm, deleteBatch, openConfirm, t]);
 
-  // A preview borrows the panel area: 常用 comes back when it ends.
-  const favoritesUnderPreview = useRef(false);
+  // A preview temporarily borrows the panel area from favorites or the queue.
+  const panelUnderPreview = useRef<SidePanelKind | null | undefined>(undefined);
 
   const showPreview = useCallback(
     (entry: ClipboardEntry) => {
-      favoritesUnderPreview.current = panel.kind === "favorites";
+      panelUnderPreview.current = panel.kind;
       setPreviewEntry(entry);
       void openPanel("preview");
     },
@@ -354,8 +421,12 @@ const App = () => {
   );
 
   const hidePreview = useCallback(() => {
+    const previous = panelUnderPreview.current;
+    if (previous === undefined) return;
+    panelUnderPreview.current = undefined;
     setPreviewEntry(null);
-    void (favoritesUnderPreview.current ? openPanel("favorites") : closePanel());
+    const restore = panelAfterPreview(previous, sequentialActiveRef.current);
+    void (restore ? openPanel(restore) : closePanel());
   }, [closePanel, openPanel]);
 
   const toggleFavorites = useCallback(() => {
@@ -372,11 +443,46 @@ const App = () => {
 
   // 常用's editor: Esc closes it before the panel, so unsaved text isn't lost.
   const [favoriteEditing, setFavoriteEditing] = useState(false);
-  const favoriteCancelEditRef = useRef<(() => boolean) | null>(null);
+  const favoritesRef = useRef<FavoritesPanelHandle>(null);
+  const editRef = useRef<UnsavedChangesHandle>(null);
+  const translateRef = useRef<UnsavedChangesHandle>(null);
+  const typingInPanel =
+    panel.kind === "edit" || panel.kind === "translate" || (panel.kind === "favorites" && favoriteEditing);
+  const cancelPreview = useSpacePreview({
+    enabled: !showSettings && !settingFixedPosition && !typingInPanel && !batchMode,
+    items,
+    selectedIndex,
+    onOpen: showPreview,
+    onClose: hidePreview,
+  });
+  const windowClose = useWindowClose({
+    t,
+    blocked: () => settingFixedPosition || confirmDialog.show || batchDeletingRef.current ||
+      batchPastingRef.current || favoritesRef.current?.isSaving() === true,
+    hasUnsavedChanges: () => Boolean(
+      favoritesRef.current?.hasUnsavedChanges() ||
+      editRef.current?.hasUnsavedChanges() ||
+      translateRef.current?.hasUnsavedChanges()
+    ),
+    hideWindow: async () => {
+      panelUnderPreview.current = undefined;
+      cancelPreview.current();
+      await invoke("escape_window_cmd");
+    },
+    openConfirm,
+    closeConfirm,
+  });
 
-  const dismiss = useCallback(() => {
+  const dismiss = useCallback((inSearch: boolean) => {
     if (settingFixedPosition) return true;
-    if (panel.kind === "favorites" && favoriteCancelEditRef.current?.()) return true;
+    if (panel.kind === "favorites" && (favoriteEditing || !inSearch || !(draft || search))) {
+      if (!favoritesRef.current?.dismiss()) closeSidePanel();
+      return true;
+    }
+    if (!showSettings && panel.kind !== "edit" && panel.kind !== "translate" && (draft || search)) {
+      clearSearch();
+      return true;
+    }
     if (panel.kind) {
       closeSidePanel();
       return true;
@@ -385,33 +491,40 @@ const App = () => {
       leaveSettings();
       return true;
     }
-    if (selectedKey !== null) {
-      setSelectedKey(null);
-      return true;
-    }
-    if (draft || search) {
-      setDraft("");
-      setSearch("");
+    if (selectedIndex !== null) {
+      clearSelection();
       return true;
     }
     return false;
-  }, [closeSidePanel, draft, leaveSettings, panel.kind, search, selectedKey, settingFixedPosition, showSettings]);
+  }, [
+    clearSearch, clearSelection, closeSidePanel, draft, favoriteEditing, leaveSettings, panel.kind, search,
+    selectedIndex, settingFixedPosition, showSettings,
+  ]);
 
   // 编辑, 翻译 and 常用's editor take typing: the list's keys stay off while they are open.
-  const typingInPanel =
-    panel.kind === "edit" || panel.kind === "translate" || (panel.kind === "favorites" && favoriteEditing);
+  const listKeys = !showSettings && !batchMode && !typingInPanel;
+  const showShortcutBadges = useShortcutBadges(listKeys && !settingFixedPosition && !confirmDialog.show);
 
   useKeyboard({
     items,
-    enabled: !showSettings && !batchMode && !typingInPanel,
+    enabled: listKeys,
     selectedIndex,
     setSelectedIndex,
     typeFilter,
     setTypeFilter,
     paste: (entry) => void paste(entry),
+    pastePlain: (entry) => void paste(entry, "plain"),
+    copy: (entry) => void copyOnly(entry),
     remove: deleteEntry,
-    focusSearch: () => searchRef.current?.focus(),
+    focusSearch: () => {
+      if (!favoritesRef.current?.focusSearchIfWithin()) searchRef.current?.focus();
+    },
+    searchPending,
+    flushSearch: () => liveSearch.flush(draft),
+    isSearchComposing: (inSearch) => inSearch ? liveSearch.isComposing() : favoritesRef.current?.isSearchComposing() === true,
     dismiss,
+    ...windowClose,
+    settingFixedPosition,
     panel: panel.kind,
     blocked: showSettings || settingFixedPosition,
     batchCount: batchItems.length,
@@ -419,14 +532,6 @@ const App = () => {
     startBatchSelectAll,
     toggleSelectAll,
     requestBatchDelete,
-  });
-
-  useSpacePreview({
-    enabled: !showSettings && !settingFixedPosition && !typingInPanel && !batchMode,
-    items,
-    selectedIndex,
-    onOpen: showPreview,
-    onClose: hidePreview,
   });
 
   // The list keeps its own width while the side panel opens or shrinks away.
@@ -451,26 +556,28 @@ const App = () => {
     };
   }, [ready, sidePanelResizingWindow]);
 
-  // A new search or tab starts with nothing picked.
-  useEffect(() => {
-    setSelectedKey(null);
-  }, [search, typeFilter]);
-
   useEffect(() => {
     if (!isTauriRuntime()) return;
     const subscriptions = [
       // Each opening starts unfiltered: a filter is for digging one item out.
       listen("clipboard-shown", () => {
+        // A button left focused (the close button, Back) shows a focus ring when the panel reopens.
+        // An open dialog keeps its focus so its focus trap and default button still work.
+        const focused = document.activeElement;
+        if (focused instanceof HTMLButtonElement && !hasOpenDialog()) focused.blur();
         setTypeFilter(null);
-        setSelectedKey(null);
+        clearSelection();
         listRef.current?.scrollToTop();
+        if (sequentialActiveRef.current && !showSettingsRef.current) openQueuePanel();
       }),
       listen<boolean>("window-pinned-changed", ({ payload }) => updateWindowPinned(payload)),
-      // A close (hotkey, red button) was refused because the window is pinned.
+      // The wake shortcut tried to hide a window pinned above other apps.
       listen("window-pinned-close-blocked", () => {
         if (pinModeRef.current === "always_on_top") pushToastRef.current(tRef.current("pinned_esc_hint"));
       }),
       listen("side-panel-collapsed", () => {
+        panelUnderPreview.current = undefined;
+        cancelPreview.current();
         setEditing(null);
         setBatchItems([]);
         setPreviewEntry(null);
@@ -479,7 +586,7 @@ const App = () => {
     return () => {
       subscriptions.forEach((subscription) => void subscription.then((off) => off()));
     };
-  }, [updateWindowPinned]);
+  }, [cancelPreview, clearSelection, openQueuePanel, updateWindowPinned]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -555,7 +662,10 @@ const App = () => {
       onConfirm: () => {
         closeConfirm();
         invoke("reset_settings")
-          .then(() => window.location.reload())
+          .then(() => {
+            mirrorAppearance("system");
+            window.location.reload();
+          })
           .catch((error) => pushToast(t("reset_failed") + String(error), 3000));
       },
     });
@@ -574,13 +684,14 @@ const App = () => {
 
   // Stable between keystrokes in the search box, so typing doesn't re-render the list.
   const renderItem = useCallback(
-    (item: ClipboardEntry) => (
+    (item: ClipboardEntry, index: number) => (
       <ClipboardCard
         item={item}
         t={t}
         selected={item.id === selectedId}
         batchMode={batchMode}
         batchChecked={batchIds.has(item.id)}
+        shortcutNumber={showShortcutBadges && index < 9 ? index + 1 : undefined}
         onPaste={paste as (entry: ClipboardEntry) => void}
         onToggleBatch={toggleBatch}
         onContextMenu={showCardMenu}
@@ -603,6 +714,7 @@ const App = () => {
       search,
       selectedId,
       showCardMenu,
+      showShortcutBadges,
       t,
       toggleBatch,
       togglePin,
@@ -622,11 +734,16 @@ const App = () => {
           isWindowPinned={isWindowPinned}
           pinMode={pinMode}
           favoritesOpen={panel.kind === "favorites"}
+          sequentialActive={sequentialActive}
+          sequentialCount={queue.items.length}
+          sequentialHotkey={sequentialHotkey}
+          updateAvailable={updateStatus?.available}
           onBack={leaveSettings}
           onToggleFavorites={toggleFavorites}
+          onToggleSequential={sequentialActive ? stopSequential : () => void invoke("start_sequential_session").catch(sequentialFailed)}
           onTogglePinned={togglePinned}
           onSelectPinMode={(mode) => selectPinMode(mode, true)}
-          onCloseWindow={() => void invoke("hide_window_cmd").catch(console.error)}
+          onCloseWindow={windowClose.requestCloseWindow}
           onClearHistory={clearHistory}
           onOpenSettings={() => {
             closeSidePanel();
@@ -634,9 +751,23 @@ const App = () => {
           }}
         />
 
+        {recordingPause?.paused && (
+          <RecordingPauseBanner
+            t={t}
+            resumeAt={recordingPause.resumeAt}
+            onResume={() => void invoke("resume_recording").catch((error) => pushToast(t("save_failed") + formatError(error, t)))}
+          />
+        )}
+        <UpdateBanner t={t} status={updateStatus} showSettings={showSettings}
+          onView={updates.openDialog} onDismiss={updates.dismiss} />
+
         {showSettings ? (
           <SettingsPage
             settings={settings}
+            updates={updates}
+            ignoredApps={ignoredApps}
+            openConfirm={openConfirm}
+            closeConfirm={closeConfirm}
             pinMode={pinMode}
             onSelectPinMode={(mode) => selectPinMode(mode, false)}
             translationConfig={translationConfig}
@@ -653,9 +784,12 @@ const App = () => {
                 ref={searchRef}
                 t={t}
                 value={draft}
-                onChange={setDraft}
-                onSubmit={(value) => setSearch(value.trim())}
-                appliedValue={search}
+                onChange={liveSearch.change}
+                onSubmit={liveSearch.flush}
+                onClear={clearSearch}
+                onCompositionStart={liveSearch.startComposition}
+                onCompositionEnd={liveSearch.endComposition}
+                pending={searchPending}
               />
               <TypeTabs t={t} value={typeFilter} onChange={setTypeFilter} />
             </div>
@@ -681,15 +815,16 @@ const App = () => {
         <aside className="side-panel">
           {panel.kind === "favorites" && (
             <FavoritesPanel
+              ref={favoritesRef}
               t={t}
               pushToast={pushToast}
               onPasteFailed={failed}
               onEditingChange={setFavoriteEditing}
-              cancelEditRef={favoriteCancelEditRef}
             />
           )}
           {panel.kind === "edit" && editing && (
             <EditPanel
+              ref={editRef}
               key={`${editing.id}:${editing.created_at ?? 0}`}
               t={t}
               entry={editing}
@@ -702,6 +837,7 @@ const App = () => {
           )}
           {panel.kind === "translate" && editing && translationConfig && (
             <TranslatePanel
+              ref={translateRef}
               key={`${editing.id}:${editing.created_at ?? 0}`}
               t={t}
               entry={editing}
@@ -714,7 +850,19 @@ const App = () => {
             />
           )}
           {panel.kind === "preview" && previewEntry && (
-            <PreviewPanel key={previewEntry.id} t={t} entry={previewEntry} />
+            <PreviewPanel key={`${previewEntry.id}:${previewEntry.created_at ?? 0}`} t={t} entry={previewEntry} />
+          )}
+          {panel.kind === "queue" && sequentialActive && (
+            <QueuePanel
+              t={t}
+              items={queue.items}
+              hotkey={sequentialHotkey}
+              onReorder={(queueIds) => void invoke("reorder_sequential_queue", { queueIds }).catch(sequentialFailed)}
+              onRemove={(queueId) => void invoke("remove_sequential_entry", { queueId }).catch(sequentialFailed)}
+              onClear={() => void invoke("clear_sequential_queue").catch(sequentialFailed)}
+              onEnd={stopSequential}
+              onPaste={() => void invoke("paste_next_step").catch(sequentialFailed)}
+            />
           )}
           {panel.kind === "batch" && (
             <BatchPanel
@@ -724,6 +872,7 @@ const App = () => {
               canSelectAll={settled && items.length > 0}
               hasMore={hasMore}
               deleting={batchDeleting}
+              onPastingChange={(pasting) => { batchPastingRef.current = pasting; }}
               onToggleSelectAll={toggleSelectAll}
               onDeleteSelected={requestBatchDelete}
               onReorder={setBatchItems}
@@ -731,6 +880,7 @@ const App = () => {
               deleteAfterPaste={deleteAfterPaste}
               moveToTopAfterPaste={moveToTopAfterPaste}
               onPasteFailed={failed}
+              onStartSequential={startSequentialFromBatch}
               onClose={closeSidePanel}
             />
           )}
@@ -748,6 +898,16 @@ const App = () => {
       )}
 
       <ToastContainer toasts={toasts} />
+      {dialogRelease && updateStatus && (
+        <UpdateDialog
+          t={t}
+          currentVersion={updateStatus.currentVersion}
+          release={dialogRelease}
+          onLater={() => updates.later(dialogRelease.version)}
+          onSkip={() => updates.skip(dialogRelease.version)}
+          onOpenReleasePage={updates.openReleasePage}
+        />
+      )}
       <ConfirmDialog
         state={confirmDialog}
         confirmLabel={confirmDialog.confirmLabel ?? t("confirm")}

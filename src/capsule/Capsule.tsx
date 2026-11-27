@@ -5,7 +5,8 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, CodeXml, File, Files, FileText, Film, Image, Link, Sparkles } from "lucide-react";
 import { applyAccent, mirroredAccent } from "../shared/lib/accent";
-import { capsuleLocale, capsuleSubtitle, capsuleTitle, type CapsulePayload } from "./capsuleText";
+import { APPEARANCE_CHANGED_EVENT, applyEffectiveTheme, type AppearanceState } from "../shared/lib/appearance";
+import { capsuleLocale, capsuleShowsCheck, capsuleSubtitle, capsuleTitle, type CapsulePayload } from "./capsuleText";
 
 // The pill itself (its glass or black fill, its size) is the native window,
 // grown by Rust. This page only draws what was copied, and fades it in once
@@ -42,13 +43,18 @@ const Capsule = () => {
     const show = listen<CapsulePayload>("capsule-show", (event) => {
       // The main window mirrors 主题色 here; it may have changed since.
       applyAccent(mirroredAccent());
+      applyEffectiveTheme(event.payload.theme);
       setPayload(event.payload);
       setShown(true);
     });
     const hide = listen("capsule-hide", () => setShown(false));
+    const appearance = listen<AppearanceState>(APPEARANCE_CHANGED_EVENT, ({ payload }) => {
+      applyEffectiveTheme(payload.effective);
+    });
     return () => {
       void show.then((off) => off());
       void hide.then((off) => off());
+      void appearance.then((off) => off());
     };
   }, []);
 
@@ -57,12 +63,12 @@ const Capsule = () => {
   const locale = capsuleLocale(payload.language);
   const title = capsuleTitle(payload, locale);
   const subtitle = capsuleSubtitle(payload, locale);
-  const dark = payload.style !== "glass";
+  const isGlass = payload.style === "glass";
   const image = payload.imagePath ? convertFileSrc(payload.imagePath) : null;
 
   return (
     <div
-      className={`capsule ${dark ? "is-island" : "is-glass"}`}
+      className={`capsule ${isGlass ? "is-glass" : "is-island"}`}
       lang={locale === "zh" ? "zh-CN" : "en"}
       style={{ width: payload.width, height: payload.height }}
     >
@@ -92,7 +98,7 @@ const Capsule = () => {
             <div className="capsule-text">
               <div className="capsule-title">
                 <span>{title}</span>
-                {payload.count > 1 && (
+                {!payload.sequential && payload.count > 1 && (
                   <motion.span
                     key={payload.count}
                     className="capsule-count"
@@ -108,7 +114,7 @@ const Capsule = () => {
             </div>
             {image ? (
               <img className="capsule-thumb" src={image} alt="" draggable={false} />
-            ) : (
+            ) : capsuleShowsCheck(payload) && (
               <motion.div
                 className="capsule-check"
                 initial={{ scale: 0.6, opacity: 0 }}

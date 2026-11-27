@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ClipboardEntry, SidePanelKind } from "../../shared/types";
 import { cycleTypeFilter, type TypeFilter } from "../../shared/lib/clipboardTypes";
+import { isBrowserFindSuppressed } from "../../shared/lib/blockBrowserAccelerators";
 import { resolveKey } from "./keyboardRules";
 
 interface KeyboardOptions {
@@ -13,10 +14,18 @@ interface KeyboardOptions {
   typeFilter: TypeFilter | null;
   setTypeFilter: (filter: TypeFilter | null) => void;
   paste: (entry: ClipboardEntry) => void;
+  pastePlain: (entry: ClipboardEntry) => void;
+  copy: (entry: ClipboardEntry) => void;
   remove: (entry: ClipboardEntry) => void;
   focusSearch: () => void;
+  searchPending: boolean;
+  flushSearch: () => void;
+  isSearchComposing: (inSearch: boolean) => boolean;
+  isComposing: () => boolean;
+  requestCloseWindow: () => void;
+  settingFixedPosition?: boolean;
   /** Esc: closes what's open. False when nothing was. */
-  dismiss: () => boolean;
+  dismiss: (inSearch: boolean) => boolean;
   panel: SidePanelKind | null;
   /** Settings or setting the fixed position. */
   blocked: boolean;
@@ -33,6 +42,12 @@ export const isField = (target: EventTarget | null) =>
   (target.matches("input, textarea, select") || target.isContentEditable);
 
 export const hasOpenDialog = () => document.querySelector("[aria-modal='true']") !== null;
+export const isRecordingHotkey = () => document.querySelector("[data-hotkey-recording='true']") !== null;
+
+const hasActiveTextSelection = (target: EventTarget | null) =>
+  target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+    ? target.selectionStart !== target.selectionEnd
+    : Boolean(window.getSelection()?.toString());
 
 export const useKeyboard = (options: KeyboardOptions) => {
   const ref = useRef(options);
@@ -41,10 +56,17 @@ export const useKeyboard = (options: KeyboardOptions) => {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const current = ref.current;
-      if (event.defaultPrevented) return;
+      if (event.defaultPrevented && !isBrowserFindSuppressed(event)) return;
+      if ((event.key === "ArrowUp" || event.key === "ArrowDown") && event.target instanceof Element &&
+          event.target.closest("[data-queue-reorder]")) return;
+      if ((event.key === "Enter" || event.key === " ") && event.target instanceof Element &&
+          event.target.closest(".window-close")) return;
       const inSearch = event.target instanceof HTMLElement && event.target.classList.contains("searchbox-input");
+      if (event.keyCode === 229 || current.isSearchComposing(inSearch) || current.isComposing()) return;
       const action = resolveKey(event, {
         dialogOpen: hasOpenDialog(),
+        recordingHotkey: isRecordingHotkey(),
+        settingFixedPosition: current.settingFixedPosition,
         inSearch,
         inField: isField(event.target),
         panel: current.panel,
@@ -54,19 +76,28 @@ export const useKeyboard = (options: KeyboardOptions) => {
         selectedIndex: current.selectedIndex,
         batchCount: current.batchCount,
         canSelectAll: current.canSelectAll,
+        searchPending: current.searchPending,
+        hasTextSelection: event.metaKey && event.key.toLowerCase() === "c" && hasActiveTextSelection(event.target),
       });
       if (action.type === "ignore") return;
       event.preventDefault();
       const selected = current.selectedIndex === null ? undefined : current.items[current.selectedIndex];
 
       switch (action.type) {
+        case "closeWindow":
+          current.requestCloseWindow();
+          return;
         case "escape":
           if (isField(event.target)) (event.target as HTMLElement).blur();
-          // escape_window_cmd also unpins: Esc is the only way out of a pinned window.
-          if (!current.dismiss()) invoke("escape_window_cmd").catch(console.error);
+          // escape_window_cmd also unpins.
+          if (!current.dismiss(inSearch)) invoke("escape_window_cmd").catch(console.error);
           return;
         case "focusSearch":
           current.focusSearch();
+          return;
+        case "flushSearch":
+          event.stopPropagation();
+          current.flushSearch();
           return;
         case "cycleType":
           current.setTypeFilter(cycleTypeFilter(current.typeFilter, action.step));
@@ -78,6 +109,16 @@ export const useKeyboard = (options: KeyboardOptions) => {
         case "paste":
           event.stopPropagation();
           if (selected) current.paste(selected);
+          return;
+        case "pastePlain":
+          event.stopPropagation();
+          if (selected) current.pastePlain(selected);
+          return;
+        case "pasteIndex":
+          current.paste(current.items[action.index]);
+          return;
+        case "copy":
+          if (selected) current.copy(selected);
           return;
         case "remove":
           if (selected) current.remove(selected);

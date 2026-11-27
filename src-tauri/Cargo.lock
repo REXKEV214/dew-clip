@@ -764,7 +764,7 @@ dependencies = [
 
 [[package]]
 name = "dewclip"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -785,6 +785,7 @@ dependencies = [
  "rusqlite",
  "rustls",
  "security-framework 2.11.1",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -792,7 +793,6 @@ dependencies = [
  "tauri-build",
  "tauri-nspanel",
  "tauri-plugin-dialog",
- "tauri-plugin-fs",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
@@ -3960,7 +3960,7 @@ dependencies = [
 [[package]]
 name = "tauri-nspanel"
 version = "2.1.0"
-source = "git+https://github.com/ahkohd/tauri-nspanel?branch=v2.1#a3122e894383aa068ec5365a42994e3ac94ba1b6"
+source = "git+https://github.com/ahkohd/tauri-nspanel?rev=a3122e894383aa068ec5365a42994e3ac94ba1b6#a3122e894383aa068ec5365a42994e3ac94ba1b6"
 dependencies = [
  "objc2",
  "objc2-app-kit",

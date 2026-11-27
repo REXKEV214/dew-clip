@@ -1,4 +1,4 @@
-import { ArrowLeft, Pin, Settings as SettingsIcon, Star, Trash2 } from "lucide-react";
+import { ArrowLeft, ListOrdered, Pin, Settings as SettingsIcon, Star, Trash2, X } from "lucide-react";
 import { showNativeMenu } from "../../shared/lib/nativeMenu";
 import { startWindowDrag } from "../../shared/lib/windowDrag";
 import type { Translate, WindowPinMode } from "../../shared/types";
@@ -9,11 +9,16 @@ interface AppHeaderProps {
   isWindowPinned: boolean;
   pinMode: WindowPinMode;
   favoritesOpen: boolean;
+  sequentialActive: boolean;
+  sequentialCount: number;
+  sequentialHotkey: string;
+  updateAvailable?: boolean;
   onBack: () => void;
   onToggleFavorites: () => void;
+  onToggleSequential: () => void;
   onTogglePinned: () => void;
   onSelectPinMode: (mode: WindowPinMode) => void;
-  onCloseWindow: () => void;
+  onCloseWindow: (source: "button") => void;
   onClearHistory: () => void;
   onOpenSettings: () => void;
 }
@@ -24,8 +29,13 @@ const AppHeader = ({
   isWindowPinned,
   pinMode,
   favoritesOpen,
+  sequentialActive,
+  sequentialCount,
+  sequentialHotkey,
+  updateAvailable,
   onBack,
   onToggleFavorites,
+  onToggleSequential,
   onTogglePinned,
   onSelectPinMode,
   onCloseWindow,
@@ -36,27 +46,31 @@ const AppHeader = ({
   const pinTooltip = t(isWindowPinned
     ? (alwaysOnTop ? "unpin_window_top_tip" : "unpin_window_normal_tip")
     : (alwaysOnTop ? "pin_window_top_tip" : "pin_window_normal_tip"));
+  const activeTooltip = sequentialHotkey
+    ? (sequentialCount === 1 ? "sequential_btn_active_tip_one" : "sequential_btn_active_tip")
+    : (sequentialCount === 1 ? "sequential_btn_active_no_key_one" : "sequential_btn_active_no_key");
+  const sequentialTooltip = sequentialActive
+    ? t(activeTooltip).replace("{count}", String(sequentialCount)).replace("{hotkey}", sequentialHotkey)
+    : t("sequential_btn_tip");
 
   return <header className="app-header" onMouseDown={startWindowDrag}>
     <button
       type="button"
-      className="traffic-close"
-      tabIndex={-1}
-      title={t("hide")}
-      aria-label={t("hide")}
+      className="window-close"
+      title={t("close_window_tip")}
+      aria-label={t("close_window")}
       onMouseDown={(event) => {
-        // Not a drag start, and no focus (focus is what left the × and a ring showing).
+        // Clicking keeps the editor focused until the close request is resolved.
         event.stopPropagation();
         event.preventDefault();
       }}
       onClick={(event) => {
         event.stopPropagation();
-        onCloseWindow();
+        event.currentTarget.blur();
+        onCloseWindow("button");
       }}
     >
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M5 5l6 6M11 5l-6 6" />
-      </svg>
+      <X size={14} strokeWidth={2.2} aria-hidden="true" />
     </button>
 
     {showSettings ? (
@@ -76,6 +90,17 @@ const AppHeader = ({
             onClick={onToggleFavorites}
           >
             <Star size={15} />
+          </button>
+          <button
+            type="button"
+            className={`icon-button sequential-button${sequentialActive ? " is-active" : ""}`}
+            title={sequentialTooltip}
+            aria-label={sequentialTooltip}
+            aria-pressed={sequentialActive}
+            onClick={onToggleSequential}
+          >
+            <ListOrdered size={15} />
+            {sequentialActive && <span className="sequential-count" aria-hidden>{sequentialCount}</span>}
           </button>
           <button
             type="button"
@@ -107,12 +132,13 @@ const AppHeader = ({
           </button>
           <button
             type="button"
-            className="icon-button"
+            className="icon-button settings-button"
             title={t("settings")}
             aria-label={t("settings")}
             onClick={onOpenSettings}
           >
             <SettingsIcon size={15} />
+            {updateAvailable && <span className="settings-update-dot" aria-hidden="true" />}
           </button>
         </div>
       </>

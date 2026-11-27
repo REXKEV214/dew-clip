@@ -24,7 +24,7 @@ use urlencoding::decode;
 
 /// The whole pasteboard, every item and type (lossless), so an image, rich
 /// text or files come back exactly after a batch paste.
-fn capture_clipboard_snapshot() -> Option<crate::infrastructure::macos_api::clipboard::PasteboardSnapshot> {
+pub(super) fn capture_clipboard_snapshot() -> Option<crate::infrastructure::macos_api::clipboard::PasteboardSnapshot> {
     crate::infrastructure::macos_api::clipboard::snapshot_pasteboard(64 * 1024 * 1024)
 }
 
@@ -207,7 +207,7 @@ fn paste_permission_missing() -> bool {
     return !crate::infrastructure::macos_api::permissions::has_accessibility_permission();
 }
 
-fn require_paste_permission(app: &tauri::AppHandle) -> AppResult<()> {
+pub(super) fn require_paste_permission(app: &tauri::AppHandle) -> AppResult<()> {
     if paste_permission_missing() {
         let _ = app.emit("accessibility-permission-required", ());
         return Err(AppError::Validation("accessibility_permission_required".into()));
@@ -233,13 +233,6 @@ async fn copy_to_clipboard_inner(
     // window hand-off and the simulated keystroke are skipped.
     let paste_blocked = paste && paste_permission_missing();
     let paste = paste && !paste_blocked;
-    println!(
-        "[DEBUG] copy_to_clipboard called: id={}, paste={}, content_type={}, content_len={}",
-        id,
-        paste,
-        content_type,
-        content.len()
-    );
 
     let mut html_content: Option<String> = None;
 
@@ -469,9 +462,9 @@ pub enum BatchSegment {
 
 /// Pause between steps of a batch paste. Slow (Electron) apps read the
 /// clipboard late, and the next step must not overwrite it before they do.
-const BATCH_STEP_DELAY_MS: u64 = 350;
+pub(super) const BATCH_STEP_DELAY_MS: u64 = 350;
 /// Time for the target to read the last step before the clipboard is restored.
-const BATCH_RESTORE_DELAY_MS: u64 = 450;
+pub(super) const BATCH_RESTORE_DELAY_MS: u64 = 450;
 
 /// Clears the pause even if a step fails. Other owners (hotkey recording)
 /// keep their own hold.
@@ -607,29 +600,33 @@ pub async fn paste_batch(
     restored?;
 
     let mut history_changed = false;
-    let result = sources.into_iter().try_for_each(|source| {
-        history_changed |= handle_post_paste_actions(
+    let mut result = Ok(());
+    for source in sources {
+        match handle_post_paste_actions(
             &app_handle,
             &state,
             Some(source),
             delete_after_use.unwrap_or(false),
             move_to_top,
-        )?;
-        Ok(())
-    });
+        ).await {
+            Ok(changed) => history_changed |= changed,
+            Err(error) => { result = Err(error); break; }
+        }
+    }
     if history_changed {
         let _ = app_handle.emit("clipboard-changed", ());
     }
     result
 }
 
-async fn handle_window_focus_for_paste(app_handle: &tauri::AppHandle) -> AppResult<()> {
+pub(super) async fn handle_window_focus_for_paste(app_handle: &tauri::AppHandle) -> AppResult<()> {
     let window_pinned = crate::WINDOW_PINNED.load(Ordering::Relaxed);
     let mut window_was_visible = false;
 
     // 1. Hide (unless pinned) before we hand control back to the target app.
     if let Some(window) = app_handle.get_webview_window("main") {
-        window_was_visible = window.is_visible().unwrap_or(false);
+        window_was_visible = crate::infrastructure::macos_api::window::is_clipboard_panel_visible()
+            || window.is_visible().unwrap_or(false);
         crate::infrastructure::macos_api::window::set_window_focusable(&window, false);
         if !window_pinned {
             crate::app::window_manager::before_hide(app_handle);
@@ -716,7 +713,7 @@ const FILES_MISSING: &str = "这些文件都已不存在，无法粘贴。";
 
 /// The same missing-file checks `prepare_clipboard_payload` makes, without
 /// writing anything: a batch checks every step before its first write.
-fn check_payload_files(content: &str, content_type: &str) -> AppResult<()> {
+pub(super) fn check_payload_files(content: &str, content_type: &str) -> AppResult<()> {
     let Some(paths) = payload_file_paths(content, content_type) else {
         return Ok(());
     };
@@ -922,7 +919,6 @@ fn copy_image_bytes_to_clipboard(bytes: Vec<u8>, source_path: Option<&str>) -> A
 }
 
 async fn copy_text_with_retry(content: &str) -> AppResult<()> {
-    println!("[DEBUG] Copying text to clipboard: {} chars", content.len());
     // Use the platform line-ending conversion without trimming. In particular,
     // trailing spaces and tabs are part of the clipboard payload and must survive
     // a history-item click exactly as captured.
@@ -953,8 +949,22 @@ impl PasteTarget {
         Self::PreviousApp(crate::global_state::LAST_ACTIVE_APP_PID.load(Ordering::Relaxed))
     }
 
-    pub(super) fn foreground_app() -> Self {
-        Self::ForegroundApp(crate::infrastructure::macos_api::window::get_active_app_snapshot().pid)
+    pub(super) fn for_sequential_paste() -> Self {
+        use crate::infrastructure::macos_api::window;
+        Self::select_for_sequential_paste(
+            window::is_clipboard_panel_visible(),
+            window::get_active_app_snapshot().pid,
+            std::process::id(),
+            crate::global_state::LAST_ACTIVE_APP_PID.load(Ordering::Relaxed),
+        )
+    }
+
+    fn select_for_sequential_paste(panel_visible: bool, foreground: u32, own: u32, previous: u32) -> Self {
+        if panel_visible || foreground == own {
+            Self::PreviousApp(previous)
+        } else {
+            Self::ForegroundApp(foreground)
+        }
     }
 }
 
@@ -978,7 +988,7 @@ fn paste_target_is_frontmost(target_pid: u32) -> bool {
 /// The normal path is already frontmost and proceeds at once. Otherwise the
 /// hand-off is retried; a target that never comes forward stops the paste,
 /// so the keystroke can't land in another app.
-async fn ensure_paste_target_frontmost(target: PasteTarget) -> AppResult<()> {
+pub(super) async fn ensure_paste_target_frontmost(target: PasteTarget) -> AppResult<()> {
     let target_pid = match target {
         PasteTarget::PreviousApp(pid) | PasteTarget::ForegroundApp(pid) => pid,
     };
@@ -1029,7 +1039,7 @@ async fn perform_paste_action(
     paste_to_target_and_then(PasteTarget::previous_app(), async {
         // Hide after paste if not pinned
         hide_window_after_paste(app_handle).await;
-        if handle_post_paste_actions(app_handle, state, source, delete_after_use, move_to_top)? {
+        if handle_post_paste_actions(app_handle, state, source, delete_after_use, move_to_top).await? {
             let _ = app_handle.emit("clipboard-changed", ());
         }
         Ok(())
@@ -1037,7 +1047,7 @@ async fn perform_paste_action(
     .await
 }
 
-async fn hide_window_after_paste(app_handle: &tauri::AppHandle) {
+pub(super) async fn hide_window_after_paste(app_handle: &tauri::AppHandle) {
     if crate::WINDOW_PINNED.load(Ordering::Relaxed) {
         return;
     }
@@ -1056,17 +1066,17 @@ pub fn send_paste_keystroke() -> AppResult<()> {
     // payload was prepared. Do not schedule another NSPanel resign here: it
     // can race the Command+V event.
     if !crate::infrastructure::macos_api::permissions::has_accessibility_permission() {
-        println!("[WARN] Accessibility permission missing; open Settings → Privacy → Accessibility");
+        crate::error!("Accessibility permission missing. Open Settings → Privacy → Accessibility");
         return Err(AppError::Validation("accessibility_permission_required".to_string()));
     }
     if !crate::infrastructure::macos_api::permissions::send_command_v() {
-        println!("[WARN] Native Command+V dispatch failed");
+        crate::error!("Native Command+V dispatch failed");
         return Err(AppError::Internal("paste_keystroke_failed".to_string()));
     }
     Ok(())
 }
 
-pub(super) fn handle_post_paste_actions(
+pub(super) async fn handle_post_paste_actions(
     app_handle: &tauri::AppHandle,
     state: &DbState,
     source: Option<EntryIdentity>,
@@ -1074,6 +1084,20 @@ pub(super) fn handle_post_paste_actions(
     move_to_top: Option<bool>,
 ) -> AppResult<bool> {
     let Some(source) = source else { return Ok(false); };
+    let change = record_paste_history(app_handle, state, source, delete_after_use, move_to_top)?;
+    if matches!(change, Some(PasteHistoryChange::Deleted)) {
+        crate::services::paste_queue::remove_deleted_items(app_handle, |identity| identity == source).await;
+    }
+    Ok(matches!(change, Some(PasteHistoryChange::Deleted | PasteHistoryChange::MovedToTop)))
+}
+
+pub(super) fn record_paste_history(
+    app_handle: &tauri::AppHandle,
+    state: &DbState,
+    source: EntryIdentity,
+    delete_after_use: bool,
+    move_to_top: Option<bool>,
+) -> AppResult<Option<PasteHistoryChange>> {
     let should_move_to_top = match move_to_top {
         Some(value) => value,
         None => state.settings_repo.get("app.move_to_top_after_paste")?.as_deref() == Some("true"),
@@ -1091,21 +1115,22 @@ pub(super) fn handle_post_paste_actions(
             let entry = &mut items[position];
             if delete_after_use && !entry.is_pinned && entry.tags.is_empty() {
                 items.remove(position);
-                return Ok(true);
+                Some(PasteHistoryChange::Deleted)
+            } else {
+                let now = Utc::now().timestamp_millis();
+                entry.use_count += 1;
+                entry.last_used_at = now;
+                if should_move_to_top {
+                    entry.timestamp = now;
+                    entry.sort_at = now;
+                }
+                Some(if should_move_to_top { PasteHistoryChange::MovedToTop } else { PasteHistoryChange::Used })
             }
-            let now = Utc::now().timestamp_millis();
-            entry.use_count += 1;
-            entry.last_used_at = now;
-            if should_move_to_top {
-                entry.timestamp = now;
-                entry.sort_at = now;
-            }
-            Some(if should_move_to_top { PasteHistoryChange::MovedToTop } else { PasteHistoryChange::Used })
         } else {
             None
         }
     };
-    Ok(matches!(change, Some(PasteHistoryChange::Deleted | PasteHistoryChange::MovedToTop)))
+    Ok(change)
 }
 
 
@@ -1113,10 +1138,21 @@ pub(super) fn handle_post_paste_actions(
 #[cfg(test)]
 mod paste_flow_tests {
     use super::{
-        check_payload_files, paste_and_then, paste_target_ready, should_restore_clipboard,
+        check_payload_files, paste_and_then, paste_target_ready, should_restore_clipboard, PasteTarget,
     };
     use crate::error::{AppError, AppResult};
     use std::cell::Cell;
+
+    #[test]
+    fn sequential_paste_uses_the_previous_app_when_dewclip_is_frontmost() {
+        let own = 77;
+        let previous = 83;
+        let foreground = 19;
+        assert!(matches!(PasteTarget::select_for_sequential_paste(false, own, own, previous), PasteTarget::PreviousApp(83)));
+        assert!(matches!(PasteTarget::select_for_sequential_paste(true, foreground, own, previous), PasteTarget::PreviousApp(83)));
+        assert!(matches!(PasteTarget::select_for_sequential_paste(false, foreground, own, previous), PasteTarget::ForegroundApp(19)));
+        assert!(matches!(PasteTarget::select_for_sequential_paste(false, 0, own, previous), PasteTarget::ForegroundApp(0)));
+    }
 
     fn run(
         target: AppResult<()>,

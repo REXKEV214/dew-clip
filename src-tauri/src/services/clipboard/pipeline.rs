@@ -1,9 +1,9 @@
-use crate::app_state::{AppDataDir, PasteQueue, SessionHistory, SettingsState};
+use crate::app_state::{AppDataDir, SessionHistory, SettingsState};
 use crate::database::{
     attachment_extension, calc_image_hash, calc_text_hash, is_text_type, stable_bytes_hash,
     DbState, PendingAttachments,
 };
-use crate::domain::models::{ClipboardEntry, EntryIdentity, EntryVersion};
+use crate::domain::models::{ClipboardEntry, EntryVersion};
 use crate::services::clipboard::utils::*;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -23,6 +23,7 @@ pub struct PipelineContext {
     pub source_app: String,
     pub source_app_path: Option<String>,
     pub timestamp: i64,
+    captured_at: std::time::Instant,
     pub entry: Option<ClipboardEntry>,
     pub should_stop: bool,
     pub pending_removals: Vec<i64>,
@@ -41,6 +42,7 @@ impl PipelineContext {
         source_app: String,
         source_app_path: Option<String>,
         timestamp: i64,
+        captured_at: std::time::Instant,
         persistent: bool,
     ) -> Self {
         let data_dir = app_handle.state::<AppDataDir>().0.lock().unwrap().clone();
@@ -50,6 +52,7 @@ impl PipelineContext {
             source_app,
             source_app_path,
             timestamp,
+            captured_at,
             entry: None,
             should_stop: false,
             pending_removals: Vec::new(),
@@ -78,19 +81,21 @@ impl ClipboardPipeline {
                 Box::new(DiscoveryStage),
                 Box::new(TransformationStage),
                 Box::new(PersistenceStage),
-                Box::new(DistributionStage),
             ],
         }
     }
 
     pub fn execute(&self, context: &mut PipelineContext) {
-        let _attachments = crate::database::ATTACHMENT_WRITERS.read().unwrap();
+        let attachments = crate::database::ATTACHMENT_WRITERS.read().unwrap();
         for stage in &self.stages {
             stage.process(context);
             if context.should_stop {
-                break;
+                return;
             }
         }
+        // Distribution can wait for a paste that is cleaning up attachments.
+        drop(attachments);
+        DistributionStage.process(context);
     }
 }
 
@@ -163,7 +168,8 @@ impl PipelineStage for DiscoveryStage {
             content,
             html_content,
             source_app: ctx.source_app.clone(),
-            source_app_path: ctx.source_app_path.clone(),
+            source_app_path: ctx.source_app_path.as_deref()
+                .map(|path| crate::infrastructure::app_path::normalize_app_path(path).into_owned()),
             timestamp: ctx.timestamp,
             created_at: ctx.timestamp,
             last_used_at: 0,
@@ -459,9 +465,6 @@ impl PipelineStage for PersistenceStage {
                 }
             }
             ctx.pending_attachments = PendingAttachments::default();
-            if let Ok(deleted_ids) = db.repo.enforce_limit_with_conn(&conn, Some(&ctx.data_dir)) {
-                ctx.pending_removals.extend(deleted_ids);
-            }
             drop(conn);
             let session = ctx.app_handle.state::<SessionHistory>();
             session.0.lock().unwrap().retain(|item| {
@@ -510,28 +513,17 @@ pub struct DistributionStage;
 impl PipelineStage for DistributionStage {
     fn process(&self, ctx: &mut PipelineContext) {
         let entry = ctx.entry.as_ref().unwrap();
-        let settings = ctx.app_handle.state::<SettingsState>();
-
-        for id in ctx.pending_removals.drain(..) {
-            let _ = ctx.app_handle.emit("clipboard-removed", id);
-        }
-
-        // Sequential Queue updates
-        if settings.sequential_mode.load(Ordering::Relaxed) {
-            let queue_state = ctx.app_handle.state::<PasteQueue>();
-            let mut queue = queue_state.0.lock().unwrap();
-            if queue.last_action_was_paste {
-                queue.items.clear();
-                queue.last_action_was_paste = false;
-            }
-            queue.items.push_back(EntryIdentity::from_entry(entry));
+        for id in &ctx.pending_removals {
+            let _ = ctx.app_handle.emit("clipboard-removed", *id);
         }
 
         // Notify
         let _ = ctx
             .app_handle
             .emit("clipboard-updated", truncate_entry_for_ui(entry.clone()));
-        crate::app::capsule::notify_copied(&ctx.app_handle, entry);
+        if !crate::services::paste_queue::on_captured(&ctx.app_handle, entry, ctx.captured_at, &ctx.pending_removals) {
+            crate::app::capsule::notify_copied(&ctx.app_handle, entry);
+        }
 
         if entry.content_type == "image" {
             crate::services::ocr::enqueue(&ctx.app_handle, entry);
@@ -558,6 +550,9 @@ impl PipelineStage for DistributionStage {
             entry,
             ctx.persistent.then(|| ctx.data_dir.clone()),
         );
+        if ctx.persistent {
+            crate::services::storage_manager::after_capture(&ctx.app_handle, entry);
+        }
     }
 }
 
@@ -566,12 +561,17 @@ struct RemoteImagesJob {
     version: EntryVersion,
     html: String,
     root: Option<PathBuf>,
+    max_bytes: usize,
 }
 
 fn queue_remote_images(app: &AppHandle, entry: &ClipboardEntry, root: Option<PathBuf>) {
     use std::sync::{mpsc, Arc, Mutex, OnceLock};
     static QUEUE: OnceLock<mpsc::SyncSender<RemoteImagesJob>> = OnceLock::new();
 
+    let settings = app.state::<SettingsState>();
+    if !settings.download_remote_images.load(Ordering::Relaxed) {
+        return;
+    }
     let Some(html) = entry
         .html_content
         .as_ref()
@@ -600,31 +600,50 @@ fn queue_remote_images(app: &AppHandle, entry: &ClipboardEntry, root: Option<Pat
         version: EntryVersion::from_entry(entry),
         html: html.clone(),
         root,
+        max_bytes: settings.remote_image_max_bytes.load(Ordering::Relaxed) as usize,
     });
 }
 
 fn complete_remote_images(job: RemoteImagesJob) {
-    let mut pending = PendingAttachments::default();
-    let html = localize_remote_images(&job.html, job.root.as_deref(), &mut pending);
-    if html == job.html || html.len() > super::MAX_PIPELINE_HTML_BYTES {
+    let settings = job.app.state::<SettingsState>();
+    if !settings.download_remote_images.load(Ordering::Relaxed) {
         return;
     }
+    let mut pending = PendingAttachments::default();
+    let html = localize_remote_images(
+        &job.html, job.root.as_deref(), &mut pending, job.max_bytes, &settings.download_remote_images,
+    );
+    let changed = html != job.html && html.len() <= super::MAX_PIPELINE_HTML_BYTES;
     if job.version.id > 0 {
+        if !changed && pending.paths().is_empty() {
+            return;
+        }
         let db = job.app.state::<DbState>();
         let conn = db.conn.lock().unwrap();
-        match db
-            .repo
-            .store_capture_html(&conn, &job.version, &job.html, html)
-        {
+        let stored = if changed {
+            db.repo.store_capture_html(&conn, &job.version, &job.html, html)
+        } else {
+            Ok(None)
+        };
+        // A row can be deleted or edited while its downloads are running. The
+        // sweep checks which downloaded files still have an owner.
+        if let Err(error) = crate::infrastructure::repository::clipboard_repo::SqliteClipboardRepository::queue_attachment_deletions(
+            &conn, pending.paths(), 0,
+        ) {
+            crate::error!(">>> [ATTACHMENTS] {error}");
+        }
+        match stored {
             Ok(Some(entry)) => {
                 let _ = job
                     .app
                     .emit("clipboard-updated", truncate_entry_for_ui(entry));
+                drop(conn);
+                crate::services::storage_manager::after_attachments(&job.app);
             }
             Ok(None) => {}
             Err(error) => eprintln!(">>> [CLIPBOARD] Could not update copied HTML: {error}"),
         }
-    } else {
+    } else if changed {
         let session = job.app.state::<SessionHistory>();
         let mut session = session.0.lock().unwrap();
         if let Some(entry) = session.iter_mut().find(|entry| {
@@ -673,10 +692,7 @@ pub fn sweep_session_files(app: &tauri::AppHandle) {
 /// Startup: the previous run's session images are unreachable now; delete
 /// them, then keep sweeping while the app runs.
 pub fn start_session_file_sweeper(app: tauri::AppHandle) {
-    std::thread::spawn(move || loop {
-        sweep_session_files(&app);
-        std::thread::sleep(std::time::Duration::from_secs(30));
-    });
+    crate::services::storage_manager::start_sweeper(app);
 }
 
 #[cfg(test)]

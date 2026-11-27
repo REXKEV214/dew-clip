@@ -3,14 +3,16 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Search } from "lucide-react";
 import type { InstalledAppOption } from "../types";
+import { associationExtension } from "../utils/defaultApps";
+import { normalizeAppPath } from "../utils/ignoredApps";
 
 interface AppSelectorProps {
     type: string | null;
     installedApps: InstalledAppOption[];
     onSelect: (val: string) => void;
-    theme: string;
     t: (key: string) => string;
-    colorMode: string;
+    mode?: "default-app" | "pick-app";
+    excludePaths?: string[];
 }
 
 interface FlattenedAppItem {
@@ -18,12 +20,14 @@ interface FlattenedAppItem {
     app: InstalledAppOption;
 }
 
-const normalizeAppValue = (value: string) => value.trim().replace(/\//g, "\\").toLowerCase();
+const normalizeAppValue = (value: string) => normalizeAppPath(value).toLowerCase();
 
 const AppSelector = ({
     type,
     installedApps,
     onSelect,
+    mode = "default-app",
+    excludePaths,
     t
 }: AppSelectorProps) => {
     const [recommended, setRecommended] = useState<InstalledAppOption[]>([]);
@@ -37,7 +41,7 @@ const AppSelector = ({
     useEffect(() => {
         let cancelled = false;
 
-        if (!type) {
+        if (!type || mode === "pick-app") {
             setRecommended([]);
             setLoading(false);
             return () => {
@@ -48,40 +52,7 @@ const AppSelector = ({
         const fetchRecommended = async () => {
             setLoading(true);
             try {
-                let extension = "";
-                let keywords: string[] = [];
-
-                switch (type) {
-                    case "image":
-                        extension = ".png";
-                        keywords = ["photo", "paint", "image", "adobe", "picture", "snip", "viewer", "画图", "照片", "看图"];
-                        break;
-                    case "text":
-                    case "code":
-                        extension = ".txt";
-                        keywords = ["text", "note", "code", "edit", "write", "office", "word", "记事本", "文档"];
-                        break;
-                    case "html":
-                    case "link":
-                    case "url":
-                        extension = ".html";
-                        keywords = ["browser", "chrome", "edge", "firefox", "web", "internet"];
-                        break;
-                    case "rtf":
-                        extension = ".rtf";
-                        keywords = ["word", "office", "write"];
-                        break;
-                    case "rich_text":
-                        extension = ".html";
-                        keywords = ["word", "office", "write", "notes", "browser", "chrome", "edge", "firefox", "wps"];
-                        break;
-                    case "file":
-                        extension = ".txt";
-                        break;
-                    default:
-                        extension = "";
-                }
-
+                const extension = associationExtension(type);
                 let associatedApps: InstalledAppOption[] = [];
                 if (extension) {
                     try {
@@ -98,25 +69,8 @@ const AppSelector = ({
                     }
                 }
 
-                const associatedValues = new Set(
-                    associatedApps.map((app) => normalizeAppValue(app.value))
-                );
-                const localMatches = installedApps.filter((app) => {
-                    const label = app.label.toLowerCase();
-                    return keywords.some((keyword) => label.includes(keyword))
-                        && !associatedValues.has(normalizeAppValue(app.value));
-                });
-
-                const seen = new Set<string>();
-                const merged = [...associatedApps, ...localMatches].filter((app) => {
-                    const key = normalizeAppValue(app.value);
-                    if (!key || seen.has(key)) return false;
-                    seen.add(key);
-                    return true;
-                });
-
                 if (!cancelled) {
-                    setRecommended(merged);
+                    setRecommended(associatedApps);
                 }
             } finally {
                 if (!cancelled) {
@@ -129,7 +83,7 @@ const AppSelector = ({
         return () => {
             cancelled = true;
         };
-    }, [type, installedApps]);
+    }, [type, mode]);
 
     useEffect(() => {
         setQuery("");
@@ -138,29 +92,13 @@ const AppSelector = ({
 
     const otherApps = useMemo(() => {
         const recommendedValues = new Set(
-            recommended.map((app) => normalizeAppValue(app.value))
+            recommended.map((app) => app.value)
         );
-        let others = installedApps.filter(
-            (app) => !recommendedValues.has(normalizeAppValue(app.value))
+        const excluded = new Set(excludePaths?.map(normalizeAppValue));
+        return installedApps.filter(
+            (app) => !recommendedValues.has(app.value) && !excluded.has(normalizeAppValue(app.value))
         );
-
-        if (type) {
-            others = others.filter((app) => {
-                const name = app.label.toLowerCase();
-                if (type === "image") {
-                    const blocked = ["music", "player", "sound", "video", "audio", "code", "terminal", "powershell", "cmd"];
-                    return !blocked.some((keyword) => name.includes(keyword));
-                }
-                if (type === "audio" || type === "video") {
-                    const blocked = ["photo", "image", "paint", "text", "note", "code", "word", "excel"];
-                    return !blocked.some((keyword) => name.includes(keyword));
-                }
-                return true;
-            });
-        }
-
-        return others;
-    }, [installedApps, recommended, type]);
+    }, [installedApps, recommended, excludePaths]);
 
     const normalizedQuery = query.trim().toLowerCase();
     const filteredRecommended = useMemo(
@@ -259,7 +197,7 @@ const AppSelector = ({
                     return (
                         <button
                             id={optionId}
-                            key={`${group}-${normalizeAppValue(app.value)}`}
+                            key={`${group}-${app.value}`}
                             ref={(node) => {
                                 itemRefs.current[index] = node;
                             }}

@@ -12,18 +12,20 @@ export interface AccentPalette {
   base: string;
   /** Text and icons on a soft fill. */
   strong: string;
+  /** Text and icons on dark glass. */
+  darkInk: string;
   /** Top and bottom of filled buttons. */
   light: string;
   mid: string;
 }
 
 export const ACCENTS = {
-  blue: { base: "#0a84ff", strong: "#0066e0", light: "#2f97ff", mid: "#0a7bff" },
-  green: { base: "#22b05a", strong: "#178a45", light: "#3cc46e", mid: "#22b05a" },
-  orange: { base: "#ff8a00", strong: "#d96a00", light: "#ffa12e", mid: "#ff8a00" },
-  red: { base: "#f0444e", strong: "#cc2a35", light: "#ff5f68", mid: "#f0444e" },
-  purple: { base: "#8e5cf0", strong: "#6e3fd1", light: "#a277f5", mid: "#8e5cf0" },
-  teal: { base: "#12a7b8", strong: "#0b8494", light: "#2fbccb", mid: "#12a7b8" },
+  blue: { base: "#0a84ff", strong: "#0066e0", darkInk: "#70b8ff", light: "#2f97ff", mid: "#0a7bff" },
+  green: { base: "#22b05a", strong: "#178a45", darkInk: "#5cdb8a", light: "#3cc46e", mid: "#22b05a" },
+  orange: { base: "#ff8a00", strong: "#d96a00", darkInk: "#ffb45f", light: "#ffa12e", mid: "#ff8a00" },
+  red: { base: "#f0444e", strong: "#cc2a35", darkInk: "#ff858c", light: "#ff5f68", mid: "#f0444e" },
+  purple: { base: "#8e5cf0", strong: "#6e3fd1", darkInk: "#c3a3ff", light: "#a277f5", mid: "#8e5cf0" },
+  teal: { base: "#12a7b8", strong: "#0b8494", darkInk: "#59d8e5", light: "#2fbccb", mid: "#12a7b8" },
 } satisfies Record<string, AccentPalette>;
 
 export type AccentName = keyof typeof ACCENTS;
@@ -44,11 +46,11 @@ export const applyAccent = (name: AccentName, root: HTMLElement = document.docum
   const vars: Record<string, string> = {
     "--accent": p.base,
     "--accent-strong": p.strong,
+    "--accent-ink-dark": p.darkInk,
     "--accent-light": p.light,
     "--accent-mid": p.mid,
     "--accent-rgb": rgbOf(p.base),
     "--accent-strong-rgb": rgbOf(p.strong),
-    "--accent-soft": `rgba(${rgbOf(p.base)}, 0.16)`,
   };
   for (const [key, value] of Object.entries(vars)) root.style.setProperty(key, value);
 };

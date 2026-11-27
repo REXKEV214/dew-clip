@@ -49,7 +49,7 @@ fn default_true() -> bool {
 }
 
 /// Identifies a capture even when SQLite reuses a deleted row's ID.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntryIdentity {
     pub id: i64,

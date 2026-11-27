@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
 use objc2::MainThreadMarker;
@@ -6,6 +6,7 @@ use objc2_app_kit::{NSEvent, NSScreen, NSWindow};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
+use crate::app::appearance::{self, EffectiveTheme};
 use crate::app_state::SettingsState;
 use crate::database::DbState;
 use crate::global_state::*;
@@ -38,69 +39,61 @@ pub fn maybe_open_devtools(_window: &WebviewWindow) {}
 /// Matches `--window-radius` in src/styles/glass.css.
 const WINDOW_CORNER_RADIUS: f64 = 18.0;
 
-/// The level the native material currently shows; -1 = not applied yet.
-static APPLIED_GLASS_LEVEL: AtomicI64 = AtomicI64::new(-1);
+static APPLIED_GLASS: Mutex<Option<(u64, EffectiveTheme)>> = Mutex::new(None);
 
 /// Up to this level the system's see-through Clear style is used; above it
-/// Regular, with a white tint that grows towards 100.
+/// Regular, with a tint that grows towards 100.
 const GLASS_CLEAR_MAX_LEVEL: u64 = 24;
-const GLASS_MAX_TINT_ALPHA: f64 = 0.72;
 
-/// `level` 0–100 → (uses the Clear style, white tint alpha 0–255).
-pub(crate) fn glass_appearance(level: u64) -> (bool, u8) {
+/// No tint uses Clear. A tint uses Regular.
+fn glass_tint(level: u64, theme: EffectiveTheme) -> Option<(u8, u8, u8, u8)> {
     let level = level.min(100);
     if level <= GLASS_CLEAR_MAX_LEVEL {
-        return (true, 0);
+        return None;
     }
     let span = (100 - GLASS_CLEAR_MAX_LEVEL) as f64;
     let t = (level - GLASS_CLEAR_MAX_LEVEL) as f64 / span;
-    (false, (t * GLASS_MAX_TINT_ALPHA * 255.0).round() as u8)
+    let (r, g, b, max_alpha) = match theme {
+        EffectiveTheme::Light => (255, 255, 255, 0.72),
+        EffectiveTheme::Dark => (24, 24, 28, 0.78),
+    };
+    Some((r, g, b, (t * max_alpha * 255.0).round() as u8))
 }
 
 /// One native glass view behind the transparent WebView, as in Maccy: macOS 26+
 /// gets NSGlassEffectView, older systems NSVisualEffectView (frosted). AppKit
 /// view changes must happen together on the main thread.
-fn apply_native_glass(window: &WebviewWindow, level: u64) -> tauri::Result<()> {
-    let target = window.clone();
-    window.run_on_main_thread(move || {
-        use window_vibrancy::{
-            apply_liquid_glass, apply_vibrancy, clear_liquid_glass, clear_vibrancy,
-            LiquidGlassOptions, NSGlassEffectViewStyle, NSVisualEffectMaterial,
-            NSVisualEffectState,
-        };
+fn apply_native_glass(window: &WebviewWindow, level: u64, theme: EffectiveTheme) {
+    use window_vibrancy::{
+        apply_liquid_glass, apply_vibrancy, clear_liquid_glass, clear_vibrancy,
+        LiquidGlassOptions, NSGlassEffectViewStyle, NSVisualEffectMaterial, NSVisualEffectState,
+    };
 
-        let _ = clear_liquid_glass(&target);
-        let _ = clear_vibrancy(&target);
+    let _ = clear_liquid_glass(window);
+    let _ = clear_vibrancy(window);
 
-        let (clear_style, tint_alpha) = glass_appearance(level);
-        let style = if clear_style {
-            NSGlassEffectViewStyle::Clear
-        } else {
-            NSGlassEffectViewStyle::Regular
-        };
-        let mut options = LiquidGlassOptions::new(style)
-            .radius(WINDOW_CORNER_RADIUS)
-            .opaque(false);
-        if tint_alpha > 0 {
-            options = options.tint_color((255, 255, 255, tint_alpha));
+    let options = match glass_tint(level, theme) {
+        Some(tint) => LiquidGlassOptions::new(NSGlassEffectViewStyle::Regular).tint_color(tint),
+        None => LiquidGlassOptions::new(NSGlassEffectViewStyle::Clear),
+    }
+    .radius(WINDOW_CORNER_RADIUS)
+    .opaque(false);
+
+    if let Err(error) = apply_liquid_glass(window, options) {
+        if !matches!(error, window_vibrancy::Error::UnsupportedPlatformVersion(_)) {
+            eprintln!("[glass] liquid glass failed, using frosted glass: {error}");
         }
-
-        if let Err(error) = apply_liquid_glass(&target, options) {
-            if !matches!(error, window_vibrancy::Error::UnsupportedPlatformVersion(_)) {
-                eprintln!("[glass] liquid glass failed, using frosted glass: {error}");
-            }
-            if let Err(error) = apply_vibrancy(
-                &target,
-                NSVisualEffectMaterial::Popover,
-                // The panel stays visible while other apps own focus.
-                Some(NSVisualEffectState::Active),
-                Some(WINDOW_CORNER_RADIUS),
-            ) {
-                eprintln!("[glass] frosted glass failed: {error}");
-            }
+        if let Err(error) = apply_vibrancy(
+            window,
+            NSVisualEffectMaterial::Popover,
+            // The panel stays visible while other apps own focus.
+            Some(NSVisualEffectState::Active),
+            Some(WINDOW_CORNER_RADIUS),
+        ) {
+            eprintln!("[glass] frosted glass failed: {error}");
         }
-        round_window_corners(&target);
-    })
+    }
+    round_window_corners(window);
 }
 
 /// The glass view rounds itself, but the window under it stays a rectangle, so
@@ -145,16 +138,16 @@ pub(crate) fn invalidate_window_shadow(window: &WebviewWindow) {
     ns_window.invalidateShadow();
 }
 
-/// Attaches the glass once; it stays attached across hide/show.
+/// Native glass stays attached across hide/show. Main thread only.
 pub fn apply_window_vibrancy(app: &AppHandle, window: &WebviewWindow) {
     let level = app.state::<SettingsState>().glass_level.load(Ordering::Relaxed);
-    if APPLIED_GLASS_LEVEL.load(Ordering::SeqCst) == level as i64 {
+    let theme = appearance::effective_theme(app);
+    let applied = Some((level, theme));
+    if *APPLIED_GLASS.lock().unwrap() == applied {
         return;
     }
-    match apply_native_glass(window, level) {
-        Ok(()) => APPLIED_GLASS_LEVEL.store(level as i64, Ordering::SeqCst),
-        Err(error) => eprintln!("[glass] scheduling failed: {error}"),
-    }
+    apply_native_glass(window, level, theme);
+    *APPLIED_GLASS.lock().unwrap() = applied;
 }
 
 /// 「Liquid Glass 透明度」 slider. 0 = clearest, 100 = most tinted.
@@ -171,7 +164,8 @@ pub fn set_glass_level(app_handle: AppHandle, level: u64) -> Result<(), String> 
         .set("app.glass_level", &level.to_string())
         .map_err(|e| e.to_string())?;
     if let Some(window) = app_handle.get_webview_window("main") {
-        apply_window_vibrancy(&app_handle, &window);
+        app_handle.clone().run_on_main_thread(move || apply_window_vibrancy(&app_handle, &window))
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -556,6 +550,7 @@ fn show_main_window(app: &AppHandle, window: &WebviewWindow) {
     position_window_for_show(app, window);
 
     if !panel::show_clipboard_panel(app) {
+        appearance::refresh_system_theme(app);
         let _ = panel::refresh_clipboard_panel_policy(app);
         apply_window_vibrancy(app, window);
         let _ = window.show();
@@ -614,7 +609,7 @@ fn hide_window(app_handle: AppHandle, restore_focus: bool) -> Result<(), String>
     Ok(())
 }
 
-/// Red button and native close request share the current pin policy.
+/// Hide the panel according to the current pin policy.
 #[tauri::command]
 pub fn hide_window_cmd(app_handle: AppHandle) -> Result<(), String> {
     if WINDOW_PINNED.load(Ordering::Relaxed) {
@@ -627,7 +622,7 @@ pub fn hide_window_cmd(app_handle: AppHandle) -> Result<(), String> {
     hide_window(app_handle, true)
 }
 
-/// Esc: the one way out of a pinned window. Unpins, then closes.
+/// Explicit close: unpins, then hides the panel.
 #[tauri::command]
 pub fn escape_window_cmd(app_handle: AppHandle) -> Result<(), String> {
     if WINDOW_PINNED.load(Ordering::Relaxed) {
@@ -708,8 +703,8 @@ pub fn restore_previous_app_focus(_app_handle: AppHandle) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::{
-        centered_target, follow_mouse_target, glass_appearance, layout_rect, normalize_position_mode,
-        parse_position, position_is_on_screen, NSPoint, NSRect, NSSize, WindowFrame,
+        centered_target, follow_mouse_target, glass_tint, layout_rect, normalize_position_mode,
+        parse_position, position_is_on_screen, EffectiveTheme, NSPoint, NSRect, NSSize, WindowFrame,
     };
 
     // A Retina main screen (1440x900 points) with a 1x screen to its right.
@@ -763,13 +758,23 @@ mod tests {
 
     #[test]
     fn glass_slider_goes_from_clear_to_tinted() {
-        assert_eq!(glass_appearance(0), (true, 0));
-        assert_eq!(glass_appearance(24), (true, 0));
-        let (clear, low) = glass_appearance(30);
-        assert!(!clear && low > 0);
-        let (_, high) = glass_appearance(100);
-        assert!(high > low);
-        assert_eq!(high, 184);
+        for (theme, color, max_alpha) in [
+            (EffectiveTheme::Light, (255, 255, 255), 184),
+            (EffectiveTheme::Dark, (24, 24, 28), 199),
+        ] {
+            for level in 0..=24 {
+                assert_eq!(glass_tint(level, theme), None);
+            }
+            let mut previous_alpha = 0;
+            for level in 25..=100 {
+                let (r, g, b, alpha) = glass_tint(level, theme).unwrap();
+                assert_eq!((r, g, b), color);
+                assert!(alpha > previous_alpha);
+                previous_alpha = alpha;
+            }
+            assert_eq!(previous_alpha, max_alpha);
+            assert_eq!(glass_tint(101, theme), glass_tint(100, theme));
+        }
     }
 
     #[test]

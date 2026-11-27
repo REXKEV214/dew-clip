@@ -25,7 +25,6 @@ fn main() -> AppResult<()> {
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -36,7 +35,10 @@ fn main() -> AppResult<()> {
         );
 
     #[cfg(target_os = "macos")]
-    let builder = builder.plugin(tauri_nspanel::init());
+    let builder = builder
+        .plugin(tauri_nspanel::init())
+        .menu(setup::application_menu)
+        .on_menu_event(setup::handle_application_menu);
 
     let app = builder
         // Launching the app again brings the running instance forward: the way
@@ -77,6 +79,7 @@ fn main() -> AppResult<()> {
             app::window_manager::focus_clipboard_window,
             app::window_manager::set_glass_level,
             app::window_manager::supports_liquid_glass,
+            app::appearance::get_appearance_state,
             app::window_manager::set_side_panel,
             app::window_manager::begin_fixed_position_setup,
             app::window_manager::save_fixed_window_position,
@@ -104,8 +107,22 @@ fn main() -> AppResult<()> {
             app::commands::get_clipboard_entry_states,
             app::commands::clear_clipboard_history,
             app::commands::get_clipboard_content,
-            app::commands::set_sequential_mode,
             app::commands::set_sequential_hotkey,
+            services::paste_queue::get_sequential_queue,
+            services::paste_queue::start_sequential_session,
+            services::paste_queue::start_sequential_from_entries,
+            services::paste_queue::stop_sequential_session,
+            services::paste_queue::enqueue_sequential_entry,
+            services::paste_queue::remove_sequential_entry,
+            services::paste_queue::reorder_sequential_queue,
+            services::paste_queue::clear_sequential_queue,
+            services::recording_pause::get_recording_pause_state,
+            services::recording_pause::pause_recording,
+            services::recording_pause::resume_recording,
+            services::updater::get_update_state,
+            services::updater::check_for_updates_now,
+            services::updater::skip_update_version,
+            services::updater::dismiss_update_banner,
             app::commands::save_setting,
             app::commands::acquire_blur_guard,
             app::commands::release_blur_guard,
@@ -120,9 +137,13 @@ fn main() -> AppResult<()> {
             app::commands::set_tray_visible,
             app::commands::set_dock_visible,
             app::commands::get_data_path,
+            services::storage_manager::get_storage_usage,
+            services::storage_manager::clear_thumbnail_cache,
+            services::storage_manager::run_storage_cleanup_now,
             app::commands::scan_installed_apps,
             app::commands::get_system_default_app,
             app::commands::get_associated_apps,
+            app::commands::canonicalize_app_paths,
             app::commands::get_executable_icon,
             app::commands::get_file_icon,
             app::commands::open_folder,

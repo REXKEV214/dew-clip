@@ -18,12 +18,24 @@
   /* Theme colour (blue by default); shared/lib/accent.ts swaps these. */
   --accent: #0a84ff;
   --accent-strong: #0066e0;
+  --accent-ink-dark: #70b8ff;
+  --accent-ink: var(--accent-strong);
+  --accent-icon: var(--accent);
   --accent-light: #2f97ff;
   --accent-mid: #0a7bff;
+  --accent-control-light: var(--accent-light);
+  --accent-control-mid: var(--accent-mid);
+  --accent-control-strong: var(--accent-strong);
+  --accent-control-base: var(--accent);
   --accent-rgb: 10, 132, 255;
   --accent-strong-rgb: 0, 102, 224;
   --accent-soft: rgba(var(--accent-rgb), 0.16);
+  --accent-glass-button: linear-gradient(180deg, rgba(var(--accent-rgb), 0.92), rgba(var(--accent-strong-rgb), 0.92));
+  --accent-glass-button-hover: linear-gradient(180deg, rgba(var(--accent-rgb), 0.96), rgba(var(--accent-strong-rgb), 0.96));
   --danger: #e5372f;
+  --danger-ink: #c42a22;
+  --error-ink: #d7372f;
+  --danger-button: linear-gradient(180deg, #ff5f57, #e5372f);
 
   --glass-fill: rgba(255, 255, 255, 0.14);
   --glass-fill-hover: rgba(255, 255, 255, 0.28);
@@ -35,6 +47,37 @@
   --glass-shadow-raised: 0 2px 4px rgba(0, 0, 0, 0.08), 0 8px 24px rgba(0, 0, 0, 0.1);
 
   --popover-fill: rgba(250, 250, 252, 0.72);
+  --popover-highlight: inset 0 0.5px 0 rgba(255, 255, 255, 0.8);
+  --modal-scrim: rgba(0, 0, 0, 0.1);
+  --picker-scrim: rgba(0, 0, 0, 0.24);
+  --picker-fill: rgba(250, 250, 252, 0.92);
+  --picker-field: rgba(255, 255, 255, 0.65);
+  --picker-field-focus: rgba(255, 255, 255, 0.88);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.2);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.32);
+  --side-panel-edge: rgba(255, 255, 255, 0.4);
+  --search-clear-fill: rgba(0, 0, 0, 0.26);
+  --search-clear-hover: rgba(0, 0, 0, 0.42);
+  --search-hit-fill: rgba(var(--accent-rgb), 0.2);
+  --pause-fill: rgba(232, 159, 36, 0.16);
+  --pause-button-fill: rgba(232, 159, 36, 0.2);
+  --pause-ink: var(--text-primary);
+  --card-rule-color: rgba(0, 0, 0, 0.13);
+  --check-fill: rgba(255, 255, 255, 0.2);
+  --badge-fill: rgba(0, 0, 0, 0.06);
+  --favorite-actions-fill: rgba(250, 250, 252, 0.84);
+  --batch-preview-fill: rgba(255, 255, 255, 0.1);
+  --section-hover: rgba(255, 255, 255, 0.12);
+  --setting-rule: rgba(0, 0, 0, 0.06);
+  --hint-fill: rgba(0, 0, 0, 0.34);
+  --switch-track: rgba(0, 0, 0, 0.14);
+  --segment-track: rgba(0, 0, 0, 0.05);
+  --segment-selected: rgba(255, 255, 255, 0.6);
+  --path-fill: rgba(0, 0, 0, 0.04);
+  --swatch-ring: rgba(255, 255, 255, 0.9);
+  --range-track: rgba(0, 0, 0, 0.12);
+  --brand-gradient: linear-gradient(135deg, #0a84ff 0%, #0057c8 55%, #3a3fd9 100%);
+  --brand-link: #0066e0;
 
   --space-page: 14px;
   /* The gap on both sides of a card's dashed line, so names, icons, text and
@@ -48,7 +91,85 @@
   font-size: 13px;
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
+  color-scheme: light dark;
+}
+
+:root[data-theme="light"] {
   color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --text-primary: rgba(255, 255, 255, 0.94);
+  --text-secondary: rgba(255, 255, 255, 0.74);
+  --text-tertiary: rgba(255, 255, 255, 0.59);
+  --accent-ink: var(--accent-ink-dark);
+  --accent-icon: var(--accent-ink);
+  --accent-soft: rgba(var(--accent-rgb), 0.22);
+  --accent-control-light: color-mix(in srgb, var(--accent-light) 53%, #14151b);
+  --accent-control-mid: color-mix(in srgb, var(--accent-mid) 59%, #14151b);
+  --accent-control-strong: color-mix(in srgb, var(--accent-strong) 63%, #14151b);
+  --accent-control-base: color-mix(in srgb, var(--accent) 59%, #14151b);
+  --accent-glass-button: linear-gradient(180deg, var(--accent-control-base), var(--accent-control-strong));
+  --accent-glass-button-hover: linear-gradient(180deg, var(--accent-control-light), var(--accent-control-strong));
+  --danger: #ff6961;
+  --danger-ink: var(--danger);
+  --error-ink: var(--danger);
+  --danger-button: linear-gradient(180deg, #bf3932, #a62924);
+
+  --glass-fill: rgba(255, 255, 255, 0.07);
+  --glass-fill-hover: rgba(255, 255, 255, 0.12);
+  --glass-fill-active: rgba(255, 255, 255, 0.18);
+  --glass-line: rgba(255, 255, 255, 0.14);
+  --glass-line-strong: rgba(255, 255, 255, 0.23);
+  --glass-highlight: inset 0 0.5px 0 rgba(255, 255, 255, 0.15);
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.22), 0 3px 10px rgba(0, 0, 0, 0.16);
+  --glass-shadow-raised: 0 2px 4px rgba(0, 0, 0, 0.26), 0 8px 24px rgba(0, 0, 0, 0.32);
+
+  --popover-fill: rgba(34, 34, 40, 0.88);
+  --popover-highlight: inset 0 0.5px 0 rgba(255, 255, 255, 0.2);
+  --modal-scrim: rgba(0, 0, 0, 0.33);
+  --picker-scrim: rgba(0, 0, 0, 0.48);
+  --picker-fill: rgba(31, 31, 37, 0.96);
+  --picker-field: rgba(255, 255, 255, 0.07);
+  --picker-field-focus: rgba(255, 255, 255, 0.13);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.23);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.38);
+  --side-panel-edge: rgba(255, 255, 255, 0.09);
+  --search-clear-fill: rgba(255, 255, 255, 0.17);
+  --search-clear-hover: rgba(255, 255, 255, 0.3);
+  --search-hit-fill: rgba(var(--accent-rgb), 0.22);
+  --search-hit-ink: var(--accent-ink);
+  --pause-fill: rgba(232, 159, 36, 0.19);
+  --pause-button-fill: rgba(232, 159, 36, 0.24);
+  --pause-ink: #ffd68d;
+  --card-rule-color: rgba(255, 255, 255, 0.19);
+  --check-fill: var(--glass-fill);
+  --badge-fill: var(--glass-fill-hover);
+  --favorite-actions-fill: rgba(40, 40, 47, 0.92);
+  --batch-preview-fill: rgba(0, 0, 0, 0.18);
+  --section-hover: var(--glass-fill-hover);
+  --setting-rule: rgba(255, 255, 255, 0.09);
+  --hint-fill: var(--glass-fill-active);
+  --switch-track: var(--glass-fill-active);
+  --segment-track: rgba(0, 0, 0, 0.24);
+  --segment-selected: rgba(255, 255, 255, 0.18);
+  --path-fill: rgba(0, 0, 0, 0.19);
+  --swatch-ring: rgba(255, 255, 255, 0.73);
+  --range-track: var(--glass-line-strong);
+  --brand-gradient: linear-gradient(135deg, #91caff 0%, #69acff 55%, #aaa5ff 100%);
+  --brand-link: #70b8ff;
+}
+
+/* The document is transparent until React mounts and sets data-theme. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --text-primary: CanvasText;
+    --text-secondary: CanvasText;
+    --text-tertiary: GrayText;
+    --accent-ink: var(--accent-ink-dark);
+  }
 }
 
 *,
@@ -119,12 +240,12 @@ p {
 ::-webkit-scrollbar-thumb {
   border-radius: 4px;
   border: 2px solid transparent;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--scrollbar-thumb);
   background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.32);
+  background: var(--scrollbar-thumb-hover);
   background-clip: padding-box;
 }
 
@@ -153,7 +274,7 @@ p {
   min-width: 0;
   display: flex;
   border-left: 0.5px solid var(--glass-line-strong);
-  box-shadow: inset 0.5px 0 0 rgba(255, 255, 255, 0.4);
+  box-shadow: inset 0.5px 0 0 var(--side-panel-edge);
 }
 
 .side-panel-body {
@@ -169,47 +290,112 @@ p {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   height: 46px;
   padding: 0 var(--space-page);
 }
 
-.traffic-close {
+.window-close {
   flex: none;
-  width: 15px;
-  height: 15px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: radial-gradient(circle at 50% 30%, #ff7a72 0%, #ff4f46 55%, #f13b32 100%);
-  box-shadow:
-    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.75),
-    inset 0 -0.5px 1px rgba(150, 20, 15, 0.35),
-    0 0 0 0.5px rgba(170, 30, 25, 0.45),
-    0 1px 2px rgba(150, 20, 15, 0.25);
+  color: var(--text-secondary);
+  background: var(--glass-fill);
+  box-shadow: var(--glass-highlight), 0 0 0 0.5px var(--glass-line);
+  transition: background 0.14s ease, box-shadow 0.14s ease, color 0.14s ease;
 }
 
-/* Same as a native window: the cross only shows under the pointer. Never on
-   focus, or a focused button would keep it (with a focus ring) after Esc or
-   when the window reopens. */
-.traffic-close:focus,
-.traffic-close:focus-visible {
-  outline: none;
+.window-close:hover {
+  color: var(--text-primary);
+  background: var(--glass-fill-hover);
+  box-shadow: var(--glass-highlight), 0 0 0 0.5px var(--glass-line-strong);
 }
 
-.traffic-close svg {
-  width: 11px;
-  height: 11px;
-  fill: none;
-  stroke: #7a0d08;
-  stroke-width: 2;
-  stroke-linecap: round;
-  opacity: 0;
-  transition: opacity 0.12s ease;
+.window-close:active {
+  color: var(--text-primary);
+  background: var(--glass-fill-active);
 }
 
-.traffic-close:hover svg {
-  opacity: 1;
+.settings-button {
+  position: relative;
+}
+
+.settings-update-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-icon);
+}
+
+.update-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 var(--space-page) 8px;
+  padding: 4px 6px 4px 10px;
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.update-banner > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.update-banner .icon-button {
+  width: 22px;
+  height: 22px;
+}
+
+.update-dialog .modal-actions {
+  flex-wrap: wrap;
+}
+
+.update-dialog .modal-title,
+.update-notes {
+  overflow-wrap: anywhere;
+}
+
+.update-notes {
+  white-space: pre-wrap;
+  max-height: 9em;
+  overflow: auto;
+  color: var(--text-secondary);
+}
+
+.update-install-reminder {
+  margin: 10px 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+  line-height: 1.5;
+}
+
+.update-settings-result {
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.update-settings-result:empty {
+  display: none;
+}
+
+.update-up-to-date {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .app-name {
@@ -248,12 +434,30 @@ p {
   background: var(--glass-fill-hover);
 }
 
+.sequential-button {
+  position: relative;
+}
+
+.sequential-count {
+  position: absolute;
+  right: -3px;
+  top: -4px;
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--accent-control-strong);
+  color: white;
+  font-size: 10px;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
 .icon-button:active {
   background: var(--glass-fill-active);
 }
 
 .icon-button.is-active {
-  color: var(--accent-strong);
+  color: var(--accent-ink);
   background: var(--accent-soft);
   box-shadow: var(--glass-highlight), 0 0 0 0.5px rgba(var(--accent-rgb), 0.4);
 }
@@ -264,12 +468,12 @@ p {
 
 .icon-button.is-pin-top {
   color: #fff;
-  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.92), rgba(var(--accent-strong-rgb), 0.92));
+  background: var(--accent-glass-button);
   box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.5), 0 1px 3px rgba(var(--accent-strong-rgb), 0.28);
 }
 
 .icon-button.is-pin-top:hover {
-  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.96), rgba(var(--accent-strong-rgb), 0.96));
+  background: var(--accent-glass-button-hover);
   filter: brightness(1.06);
 }
 
@@ -287,7 +491,7 @@ p {
 
 .back-button:hover {
   color: #fff;
-  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+  background: linear-gradient(180deg, var(--accent-control-base), var(--accent-control-strong));
   box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.55), 0 1px 3px rgba(var(--accent-strong-rgb), 0.3);
 }
 
@@ -304,7 +508,7 @@ p {
   display: grid;
   place-items: center;
   border-radius: 15px;
-  color: var(--accent-strong);
+  color: var(--accent-ink);
   background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.2), rgba(var(--accent-rgb), 0.12));
   box-shadow: var(--glass-highlight), 0 0 0 0.5px rgba(var(--accent-rgb), 0.34);
   transition: background 0.14s ease, color 0.26s ease;
@@ -318,7 +522,7 @@ p {
   inset: 0;
   z-index: -1;
   border-radius: inherit;
-  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.92), rgba(var(--accent-strong-rgb), 0.92));
+  background: var(--accent-glass-button);
   opacity: 0;
   transition: opacity 0.26s ease;
 }
@@ -351,6 +555,30 @@ p {
 }
 
 /* Search ----------------------------------------------------------------- */
+
+.recording-pause-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 12px 4px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  color: var(--pause-ink);
+  background: var(--pause-fill);
+  font-size: 12px;
+}
+
+.recording-pause-banner button {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 5px;
+  color: inherit;
+  background: var(--pause-button-fill);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
 
 .list-toolbar {
   flex: none;
@@ -392,7 +620,7 @@ p {
 
 /* The magnifier turns blue as the letters slide into the blue button. */
 .searchbox.is-active .searchbox-icon {
-  color: var(--accent);
+  color: var(--accent-icon);
 }
 
 .searchbox-input {
@@ -426,11 +654,11 @@ p {
   display: grid;
   place-items: center;
   color: #fff;
-  background: rgba(0, 0, 0, 0.26);
+  background: var(--search-clear-fill);
 }
 
 .searchbox-clear:hover {
-  background: rgba(0, 0, 0, 0.42);
+  background: var(--search-clear-hover);
 }
 
 .searchbox.is-active .searchbox-input:has(+ .searchbox-clear) {
@@ -448,7 +676,7 @@ p {
   transform: scaleX(0);
   opacity: 0;
   pointer-events: none;
-  background: linear-gradient(180deg, var(--accent-light) 0%, var(--accent-mid) 55%, var(--accent-strong) 100%);
+  background: linear-gradient(180deg, var(--accent-control-light) 0%, var(--accent-control-mid) 55%, var(--accent-control-strong) 100%);
   box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.55), 0 1px 3px rgba(var(--accent-strong-rgb), 0.32);
   transition:
     transform 0.38s cubic-bezier(0.32, 0.72, 0, 1),
@@ -494,10 +722,9 @@ p {
   left: 38px;
   top: 0;
   height: 100%;
-  width: 44px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 0.5px;
   pointer-events: none;
   font-size: 14px;
   font-weight: 500;
@@ -545,7 +772,7 @@ p {
 
 .type-tab.is-active {
   color: #fff;
-  background: linear-gradient(180deg, var(--accent-light), var(--accent-mid));
+  background: linear-gradient(180deg, var(--accent-control-light), var(--accent-control-mid));
   box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.5), 0 1px 3px rgba(var(--accent-strong-rgb), 0.28);
 }
 
@@ -738,7 +965,7 @@ p {
    user which card the pointer is on. 删除 uses the same recipe in red. */
 .card-action {
   --pill-rgb: var(--accent-rgb);
-  --pill-ink: var(--accent-strong);
+  --pill-ink: var(--accent-ink);
   flex: none;
   width: 26px;
   height: 20px;
@@ -753,7 +980,7 @@ p {
 
 .card-action.is-danger {
   --pill-rgb: 229, 55, 47;
-  --pill-ink: #c42a22;
+  --pill-ink: var(--danger-ink);
 }
 
 .card:hover .card-action,
@@ -777,7 +1004,7 @@ p {
 /* 已置顶: solid, like the 常用 button when its panel is open. */
 .card .card-action.is-active {
   color: #fff;
-  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.92), rgba(var(--accent-strong-rgb), 0.92));
+  background: var(--accent-glass-button);
   box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.5), 0 0 0 0.5px rgba(var(--accent-strong-rgb), 0.5);
 }
 
@@ -792,9 +1019,31 @@ p {
   font-variant-numeric: tabular-nums;
 }
 
+.card-shortcut {
+  flex: none;
+  padding: 0 4px;
+  border: 1px solid var(--glass-line);
+  border-radius: 4px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 14px;
+}
+
+:root[data-theme="dark"] .card-shortcut {
+  color: var(--text-secondary);
+  background: var(--badge-fill);
+}
+
+.card:hover .card-shortcut,
+.card.is-selected .card-shortcut {
+  color: var(--text-secondary);
+}
+
 .card-rule {
   margin: var(--card-rule-gap) 0;
-  border-top: 1px dashed rgba(0, 0, 0, 0.13);
+  border-top: 1px dashed var(--card-rule-color);
 }
 
 .card-text {
@@ -834,8 +1083,8 @@ p {
 
 /* The searched word itself: a light blue fill that glows a little. */
 .search-hit {
-  color: inherit;
-  background: rgba(var(--accent-rgb), 0.2);
+  color: var(--search-hit-ink, inherit);
+  background: var(--search-hit-fill);
   border-radius: 3px;
   padding: 0 1px;
   margin: 0 -1px;
@@ -939,13 +1188,13 @@ p {
   display: grid;
   place-items: center;
   color: #fff;
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--check-fill);
   box-shadow: var(--glass-highlight), 0 0 0 1px var(--glass-line-strong);
   transition: background 0.12s ease;
 }
 
 .card-check.is-on {
-  background: linear-gradient(180deg, var(--accent-light), var(--accent-mid));
+  background: linear-gradient(180deg, var(--accent-control-light), var(--accent-control-mid));
   box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.5), 0 1px 2px rgba(var(--accent-strong-rgb), 0.3);
 }
 
@@ -1054,7 +1303,13 @@ p {
 }
 
 .batch-panel-actions {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
   align-items: center;
+}
+
+.batch-sequential-button {
+  grid-column: 1 / -1;
 }
 
 .batch-delete-button {
@@ -1069,7 +1324,7 @@ p {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  color: var(--accent-strong);
+  color: var(--accent-ink);
   background: var(--accent-soft);
 }
 
@@ -1086,8 +1341,7 @@ p {
   gap: 7px;
 }
 
-/* 常用语 / 图片与文件 and, when tags are in use, the tag filter: one block
-   that does not scroll, with the line under it. */
+/* Search, tabs and the tag filter stay above the scrolling favorites. */
 .favorite-toolbar {
   flex: none;
   display: flex;
@@ -1096,9 +1350,53 @@ p {
   border-bottom: 0.5px solid var(--glass-line);
 }
 
-/* Styled like the type tabs on the left. Without tags its line lands at the
-   same height as the left toolbar's, so the two sides read as one row:
-   header 46 + 9 + tab 27 = 82, the search box's bottom edge. */
+.favorite-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  margin: 9px var(--space-page) 0;
+  padding: 0 8px;
+  border-radius: var(--radius-control);
+  color: var(--text-secondary);
+  background: var(--glass-fill);
+  box-shadow: var(--glass-highlight), 0 0 0 0.5px var(--glass-line);
+}
+
+.favorite-search:focus-within {
+  background: var(--glass-fill-hover);
+  box-shadow: var(--glass-highlight), 0 0 0 0.5px var(--glass-line-strong);
+}
+
+.favorite-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  color: var(--text-primary);
+  background: transparent;
+  font-size: 13px;
+}
+
+.favorite-search input::placeholder {
+  color: var(--text-secondary);
+}
+
+.favorite-search button {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: var(--text-secondary);
+}
+
+.favorite-search button:hover {
+  background: var(--glass-fill-hover);
+}
+
 .favorite-tabs {
   flex: none;
   display: grid;
@@ -1162,12 +1460,17 @@ p {
 
 .favorite-tag-pill.is-active {
   color: #fff;
-  background: linear-gradient(180deg, var(--accent-light), var(--accent-mid));
+  background: linear-gradient(180deg, var(--accent-control-light), var(--accent-control-mid));
   box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.5), 0 1px 3px rgba(var(--accent-strong-rgb), 0.26);
 }
 
 .favorite-media.is-image {
   display: block;
+}
+
+.favorite-media.is-image .favorite-name {
+  display: block;
+  margin-top: 4px;
 }
 
 .favorite-image {
@@ -1194,6 +1497,10 @@ p {
 
 .favorite-item:hover {
   background: var(--glass-fill-hover);
+}
+
+.favorite-list.is-searching .favorite-item {
+  padding-left: 10px;
 }
 
 .favorite-item:active {
@@ -1268,14 +1575,14 @@ p {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--accent-strong);
+  color: var(--accent-ink);
   background: var(--accent-soft);
 }
 
 .favorite-card-tag.is-more {
   flex: none;
   color: var(--text-tertiary);
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--badge-fill);
 }
 
 .favorite-text {
@@ -1363,7 +1670,7 @@ p {
   gap: 4px;
   padding: 2px;
   border-radius: 12px;
-  background: rgba(250, 250, 252, 0.84);
+  background: var(--favorite-actions-fill);
   -webkit-backdrop-filter: blur(12px) saturate(160%);
   backdrop-filter: blur(12px) saturate(160%);
   box-shadow: 0 0 0 0.5px var(--glass-line), 0 2px 6px rgba(0, 0, 0, 0.08);
@@ -1472,7 +1779,7 @@ p {
   border-radius: 11px;
   font-size: 11.5px;
   font-weight: 550;
-  color: var(--accent-strong);
+  color: var(--accent-ink);
   background: var(--accent-soft);
 }
 
@@ -1489,7 +1796,7 @@ p {
   border-radius: 50%;
   display: grid;
   place-items: center;
-  color: var(--accent-strong);
+  color: var(--accent-ink);
 }
 
 .favorite-tag-chip-remove:hover {
@@ -1543,7 +1850,7 @@ p {
 }
 
 .favorite-tag-suggestion:hover:not(:disabled) {
-  color: var(--accent-strong);
+  color: var(--accent-ink);
   background: var(--accent-soft);
   box-shadow: 0 0 0 0.5px rgba(var(--accent-rgb), 0.35);
 }
@@ -1610,7 +1917,7 @@ p {
 }
 
 .translate-textarea.has-error::placeholder {
-  color: #d7372f;
+  color: var(--error-ink);
 }
 
 .translate-run {
@@ -1648,7 +1955,7 @@ p {
   overflow-y: auto;
   padding: 8px;
   border-radius: var(--radius-card);
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--batch-preview-fill);
   box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.06), 0 0 0 0.5px var(--glass-line);
 }
 
@@ -1703,6 +2010,65 @@ p {
   color: var(--text-tertiary);
 }
 
+.queue-status {
+  margin: 0;
+  padding: 0 var(--space-page) 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.queue-item {
+  margin-bottom: 6px;
+}
+
+.queue-scroll {
+  min-height: 0;
+}
+
+.queue-item.is-next {
+  background: var(--accent-soft);
+}
+
+.queue-item .favorite-grip {
+  touch-action: none;
+}
+
+.queue-position,
+.queue-next {
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.queue-position {
+  min-width: 14px;
+  text-align: center;
+}
+
+.queue-next {
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: var(--glass-fill);
+  color: var(--accent-ink);
+}
+
+.queue-preview {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.queue-preview .batch-image {
+  width: 36px;
+  height: 28px;
+  object-fit: cover;
+}
+
+.queue-preview .batch-text {
+  -webkit-line-clamp: 2;
+}
+
 /* Shared controls -------------------------------------------------------- */
 
 .glass-button {
@@ -1743,23 +2109,23 @@ p {
 
 .glass-button.is-primary {
   color: #fff;
-  background: linear-gradient(180deg, var(--accent-light), var(--accent-mid));
+  background: linear-gradient(180deg, var(--accent-control-light), var(--accent-control-mid));
   box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.55), 0 1px 3px rgba(var(--accent-strong-rgb), 0.3);
 }
 
 .glass-button.is-primary:hover:not(:disabled) {
-  background: linear-gradient(180deg, var(--accent-light), var(--accent-mid));
+  background: linear-gradient(180deg, var(--accent-control-light), var(--accent-control-mid));
   filter: brightness(1.08);
 }
 
 .glass-button.is-danger {
   color: #fff;
-  background: linear-gradient(180deg, #ff5f57, #e5372f);
+  background: var(--danger-button);
   box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.5), 0 1px 3px rgba(190, 40, 30, 0.3);
 }
 
 .glass-button.is-danger:hover:not(:disabled) {
-  background: linear-gradient(180deg, #ff5f57, #e5372f);
+  background: var(--danger-button);
   filter: brightness(1.08);
 }
 
@@ -1797,7 +2163,7 @@ p {
   gap: 4px;
   font-size: 12px;
   font-weight: 550;
-  color: var(--accent-strong);
+  color: var(--accent-ink);
 }
 
 .link-button:hover {
@@ -1809,7 +2175,7 @@ p {
   background: var(--popover-fill);
   -webkit-backdrop-filter: blur(24px) saturate(170%);
   backdrop-filter: blur(24px) saturate(170%);
-  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.8), 0 0 0 0.5px var(--glass-line-strong), var(--glass-shadow-raised);
+  box-shadow: var(--popover-highlight), 0 0 0 0.5px var(--glass-line-strong), var(--glass-shadow-raised);
 }
 
 .toast-container {
@@ -1840,7 +2206,7 @@ p {
   display: grid;
   place-items: center;
   padding: 16px;
-  background: rgba(0, 0, 0, 0.1);
+  background: var(--modal-scrim);
   border-radius: var(--window-radius);
 }
 
@@ -1888,7 +2254,7 @@ p {
   place-items: center;
   border-radius: 12px;
   color: #fff;
-  background: linear-gradient(180deg, var(--accent-light), var(--accent-strong));
+  background: linear-gradient(180deg, var(--accent-control-light), var(--accent-control-strong));
   box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.6), 0 3px 10px rgba(var(--accent-rgb), 0.3);
 }
 
@@ -1932,7 +2298,7 @@ p {
   display: grid;
   place-items: center;
   border-radius: 9px;
-  color: var(--accent);
+  color: var(--accent-icon);
   background: var(--accent-soft);
 }
 
@@ -1962,7 +2328,7 @@ p {
   gap: 3px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--accent-icon);
 }
 
 .permission-note {
@@ -2033,7 +2399,7 @@ p {
 }
 
 .settings-section-header:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--section-hover);
 }
 
 .settings-section-body {
@@ -2048,7 +2414,7 @@ p {
   gap: 12px;
   min-height: 42px;
   padding: 7px 0;
-  border-bottom: 0.5px solid rgba(0, 0, 0, 0.06);
+  border-bottom: 0.5px solid var(--setting-rule);
 }
 
 .setting-row:last-child {
@@ -2088,6 +2454,39 @@ p {
   color: var(--text-tertiary);
 }
 
+.setting-details {
+  display: grid;
+  gap: 5px;
+  padding: 8px 10px;
+  margin: 0;
+  border: 0.5px solid var(--glass-line);
+  border-radius: 8px;
+  list-style: none;
+  font-size: 12px;
+}
+
+.setting-details > :is(li, div) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.setting-detail-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.setting-details dd {
+  margin: 0;
+  align-items: center;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .hint-dot {
   flex: none;
   width: 14px;
@@ -2099,13 +2498,13 @@ p {
   font-weight: 700;
   line-height: 1;
   color: #fff;
-  background: rgba(0, 0, 0, 0.34);
+  background: var(--hint-fill);
   transition: background 0.14s ease, box-shadow 0.14s ease;
 }
 
 .hint-dot:hover,
 .hint-dot:focus-visible {
-  background: var(--accent);
+  background: var(--accent-control-base);
   box-shadow: 0 1px 6px rgba(var(--accent-strong-rgb), 0.45);
 }
 
@@ -2142,7 +2541,7 @@ p {
   position: absolute;
   inset: 0;
   border-radius: 11px;
-  background: rgba(0, 0, 0, 0.14);
+  background: var(--switch-track);
   box-shadow: inset 0 0.5px 1.5px rgba(0, 0, 0, 0.14);
   transition: background 0.2s ease;
 }
@@ -2160,7 +2559,7 @@ p {
 }
 
 .switch input:checked + .switch-track {
-  background: linear-gradient(180deg, var(--accent-light), var(--accent-mid));
+  background: linear-gradient(180deg, var(--accent-control-light), var(--accent-control-mid));
 }
 
 .switch input:checked + .switch-track .switch-thumb {
@@ -2179,7 +2578,7 @@ p {
   gap: 2px;
   padding: 2px;
   border-radius: var(--radius-control);
-  background: rgba(0, 0, 0, 0.05);
+  background: var(--segment-track);
   box-shadow: inset 0 0.5px 1.5px rgba(0, 0, 0, 0.06);
 }
 
@@ -2202,8 +2601,8 @@ p {
 
 .segment.is-active {
   color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.6);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), inset 0 0.5px 0 rgba(255, 255, 255, 0.8);
+  background: var(--segment-selected);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), var(--popover-highlight);
 }
 
 .hotkey-field {
@@ -2227,7 +2626,7 @@ p {
 .hotkey-field.is-recording {
   font-size: 12px;
   font-weight: 550;
-  color: var(--accent-strong);
+  color: var(--accent-ink);
   background: var(--accent-soft);
   box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.6);
 }
@@ -2281,7 +2680,7 @@ p {
   font-size: 11px;
   font-weight: 600;
   line-height: 18px;
-  color: var(--accent-strong);
+  color: var(--accent-ink);
   background: var(--accent-soft);
 }
 
@@ -2317,7 +2716,7 @@ p {
 }
 
 .translate-test-result.is-ok {
-  color: var(--accent-strong);
+  color: var(--accent-ink);
 }
 
 @keyframes spin {
@@ -2339,7 +2738,7 @@ p {
   user-select: text;
   -webkit-user-select: text;
   color: var(--text-secondary);
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--path-fill);
 }
 
 .picker-button {
@@ -2392,7 +2791,7 @@ p {
 .accent-swatch.is-active {
   box-shadow:
     inset 0 0.5px 0 rgba(255, 255, 255, 0.5),
-    0 0 0 2px rgba(255, 255, 255, 0.9),
+    0 0 0 2px var(--swatch-ring),
     0 0 0 3.5px var(--swatch);
 }
 
@@ -2424,7 +2823,7 @@ input[type="range"]::-webkit-slider-runnable-track {
   background: linear-gradient(
     90deg,
     var(--accent) var(--range-progress, 0%),
-    rgba(0, 0, 0, 0.12) var(--range-progress, 0%)
+    var(--range-track) var(--range-progress, 0%)
   );
 }
 
@@ -2474,7 +2873,7 @@ input[type="range"]::-webkit-slider-thumb {
   line-height: 1.15;
   letter-spacing: -0.02em;
   /* The brand keeps its own blue whatever the theme colour. */
-  background: linear-gradient(135deg, #0a84ff 0%, #0057c8 55%, #3a3fd9 100%);
+  background: var(--brand-gradient);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -2497,7 +2896,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 .settings-footer .brand-link {
   margin-top: 10px;
-  color: #0066e0;
+  color: var(--brand-link);
   gap: 5px;
   font-size: 12px;
 }
@@ -2505,7 +2904,7 @@ input[type="range"]::-webkit-slider-thumb {
 /* App picker ------------------------------------------------------------- */
 
 .modal-overlay-app-selector {
-  background: rgba(0, 0, 0, 0.24);
+  background: var(--picker-scrim);
   -webkit-backdrop-filter: blur(4px);
   backdrop-filter: blur(4px);
 }
@@ -2516,7 +2915,7 @@ input[type="range"]::-webkit-slider-thumb {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  background: rgba(250, 250, 252, 0.92);
+  background: var(--picker-fill);
   -webkit-backdrop-filter: blur(28px) saturate(160%);
   backdrop-filter: blur(28px) saturate(160%);
 }
@@ -2610,7 +3009,7 @@ input[type="range"]::-webkit-slider-thumb {
   border: 0;
   border-radius: var(--radius-small);
   font-size: 13px;
-  background: rgba(255, 255, 255, 0.65);
+  background: var(--picker-field);
   box-shadow: 0 0 0 0.5px var(--glass-line-strong), inset 0 1px 2px rgba(0, 0, 0, 0.04);
   transition: box-shadow 0.14s ease, background 0.14s ease;
 }
@@ -2618,7 +3017,7 @@ input[type="range"]::-webkit-slider-thumb {
 .app-selector-search input:focus,
 .app-selector-search input:focus-visible {
   outline: none;
-  background: rgba(255, 255, 255, 0.88);
+  background: var(--picker-field-focus);
   box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.7), 0 0 0 3px rgba(var(--accent-rgb), 0.16);
 }
 
@@ -2818,7 +3217,7 @@ input[type="range"]::-webkit-slider-thumb {
 .advanced-search-result-action {
   flex: none;
   font-size: 11.5px;
-  color: var(--accent-strong);
+  color: var(--accent-ink);
 }
 
 .expandable-search {
@@ -3030,7 +3429,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 .settings-inline-choice-btn.active {
   color: #fff;
-  background: linear-gradient(180deg, var(--accent-light), var(--accent-mid));
+  background: linear-gradient(180deg, var(--accent-control-light), var(--accent-control-mid));
 }
 
 .advanced-rule-actions {

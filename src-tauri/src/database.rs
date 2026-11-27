@@ -123,6 +123,10 @@ static PENDING_ATTACHMENTS: std::sync::LazyLock<
 pub(crate) struct PendingAttachments(Vec<std::path::PathBuf>);
 
 impl PendingAttachments {
+    pub fn paths(&self) -> &[std::path::PathBuf] {
+        &self.0
+    }
+
     pub fn protect(&mut self, path: &std::path::Path) {
         *PENDING_ATTACHMENTS
             .lock()
@@ -346,23 +350,32 @@ pub const AUTOSTART_PENDING_KEY: &str = "app.autostart_pending";
 
 /// Defaults for every DewClip setting. `INSERT OR IGNORE`: saved values win.
 pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
-    ("app.hotkey", "Shift+Z"),
+    ("app.hotkey", "Alt+Z"),
     ("app.silent_start", "false"),
     ("app.window_position_mode", "follow_mouse"),
     ("app.hide_tray_icon", "false"),
     ("app.hide_dock_icon", "false"),
     ("app.glass_level", "35"),
+    (crate::app::appearance::SETTING_KEY, "system"),
     ("app.persistent", "true"),
-    ("app.persistent_limit_enabled", "false"),
-    ("app.persistent_limit", "1000"),
+    ("app.history_retention_days", "0"),
+    ("app.storage_limit_mb", "0"),
+    ("app.download_remote_images", "true"),
+    (crate::services::updater::ENABLED_KEY, "true"),
+    ("app.remote_image_max_mb", "8"),
     ("app.delete_after_paste", "false"),
     ("app.move_to_top_after_paste", "true"),
-    ("app.sequential_mode", "false"),
     ("app.sequential_hotkey", "Alt+V"),
     ("app.cleanup_rules", ""),
     ("app.app_cleanup_policies", "[]"),
     ("app.window_pinned", "false"),
 ];
+
+pub(crate) const BYTES_PER_MB: u64 = 1024 * 1024;
+
+pub(crate) fn remote_image_max_bytes(value: &str) -> u64 {
+    value.parse::<u64>().ok().filter(|mb| (1..=32).contains(mb)).unwrap_or(8) * BYTES_PER_MB
+}
 
 pub fn seed_defaults(conn: &Connection) -> Result<()> {
     // Only a new (or reset) database lacks the hotkey.

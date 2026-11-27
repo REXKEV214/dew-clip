@@ -1,55 +1,13 @@
+use crate::app::appearance::{self, AppearancePreference};
 use crate::app::commands::hotkey_cmd::sync_registered_hotkeys;
-use crate::app_state::{PasteQueue, SettingsState};
+use crate::app_state::SettingsState;
 use crate::database::DbState;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::macos_api::window::{self as panel, WindowPinMode, PIN_MODE_KEY};
 use crate::infrastructure::repository::settings_repo::SettingsRepository;
+use crate::services::updater;
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Manager, State};
-
-#[tauri::command]
-pub fn set_sequential_mode(
-    app_handle: AppHandle,
-    state: State<'_, crate::app_state::SettingsState>,
-    enabled: bool,
-) {
-    state.sequential_mode.store(enabled, Ordering::Relaxed);
-    let db_state = app_handle.state::<DbState>();
-    let _ = db_state
-        .settings_repo
-        .set("app.sequential_mode", &enabled.to_string());
-
-    if !enabled {
-        let paste_queue = app_handle.state::<PasteQueue>();
-        let mut queue = paste_queue.inner().0.lock().unwrap();
-        queue.items.clear();
-        queue.last_action_was_paste = false;
-    }
-
-    let _ = sync_registered_hotkeys(&app_handle);
-}
-
-#[tauri::command]
-pub fn set_sequential_hotkey(
-    app_handle: AppHandle,
-    state: State<'_, SettingsState>,
-    hotkey: String,
-) -> AppResult<()> {
-    if let Ok(mut guard) = state.sequential_paste_hotkey.lock() {
-        *guard = hotkey.clone();
-    }
-
-    let db_state = app_handle.state::<DbState>();
-    db_state
-        .settings_repo
-        .set("app.sequential_hotkey", &hotkey)
-        .map_err(AppError::from)?;
-
-    sync_registered_hotkeys(&app_handle)
-}
-
-
-
 
 #[tauri::command]
 pub fn save_setting(
@@ -62,12 +20,35 @@ pub fn save_setting(
     if crate::database::is_translation_setting(&key) {
         return Err(AppError::Validation("use save_translation_config".into()));
     }
+    if updater::is_internal_setting(&key) {
+        return Err(AppError::Validation("update_failed".into()));
+    }
+    if key == updater::ENABLED_KEY {
+        return updater::set_enabled(&app_handle, value == "true");
+    }
+    if key == updater::ONBOARDING_DONE_KEY {
+        return updater::set_onboarding_done(&app_handle, &value);
+    }
+    let atomic_setting = match key.as_str() {
+        "app.history_retention_days" => Some((&settings_state.history_retention_days, value.parse().unwrap_or(0))),
+        "app.storage_limit_mb" => Some((&settings_state.storage_limit_mb, value.parse().unwrap_or(0))),
+        "app.remote_image_max_mb" => Some((&settings_state.remote_image_max_bytes, crate::database::remote_image_max_bytes(&value))),
+        _ => None,
+    };
+    if let Some((setting, parsed)) = atomic_setting {
+        db_state.settings_repo.set(&key, &value)?;
+        setting.store(parsed, Ordering::Relaxed);
+        return Ok(());
+    }
+    if key == "app.download_remote_images" {
+        db_state.settings_repo.set(&key, &value)?;
+        settings_state.download_remote_images.store(value == "true", Ordering::Relaxed);
+        return Ok(());
+    }
     match key.as_str() {
-        "app.sequential_mode" => {
-            settings_state
-                .sequential_mode
-                .store(value == "true", Ordering::Relaxed);
-        }
+        appearance::SETTING_KEY => return appearance::set_appearance(app_handle, AppearancePreference::from_setting(&value)),
+        "app.hotkey" => return super::hotkey_cmd::register_hotkey(app_handle, value),
+        "app.sequential_hotkey" => return super::hotkey_cmd::set_sequential_hotkey(app_handle, value),
         "app.persistent" => {
             settings_state
                 .persistent
@@ -122,7 +103,11 @@ pub fn save_setting(
     db_state
         .settings_repo
         .set(&key, &value)
-        .map_err(AppError::from)
+        .map_err(AppError::from)?;
+    if key == "app.language" {
+        crate::app::tray::refresh_tray(&app_handle);
+    }
+    Ok(())
 }
 
 
@@ -180,7 +165,9 @@ pub fn set_window_pin_mode(app_handle: AppHandle, mode: WindowPinMode) -> AppRes
 pub fn get_settings(
     state: State<'_, DbState>,
 ) -> AppResult<std::collections::HashMap<String, String>> {
-    state.settings_repo.get_all().map_err(AppError::from)
+    let mut settings = state.settings_repo.get_all()?;
+    settings.retain(|key, _| !updater::is_internal_setting(key));
+    Ok(settings)
 }
 
 
@@ -255,11 +242,9 @@ pub fn set_app_cleanup_policies(
     policies: String,
 ) -> AppResult<()> {
     let mut guard = state.app_cleanup_policies.lock().unwrap();
-    *guard = policies.clone();
-    db_state
-        .settings_repo
-        .set("app.app_cleanup_policies", &policies)
-        .map_err(AppError::from)
+    db_state.settings_repo.set("app.app_cleanup_policies", &policies)?;
+    *guard = policies;
+    Ok(())
 }
 
 
@@ -279,16 +264,12 @@ pub fn reset_settings(
     state: State<'_, DbState>,
     settings_state: State<'_, crate::app_state::SettingsState>,
 ) -> AppResult<()> {
-    use crate::database::seed_defaults;
-
-    state.settings_repo.clear().map_err(AppError::from)?;
-    {
-        let conn = state.conn.lock().unwrap();
-        seed_defaults(&conn).map_err(AppError::from)?;
-    }
+    updater::reset_settings(&app)?;
     // Running state follows the defaults now, not after the next start.
     let fresh = crate::app::setup::load_settings(&state.settings_repo)?;
     settings_state.take_values_from(crate::app::setup::settings_state_from(&fresh));
+    appearance::reapply(&app)?;
+    crate::app::tray::refresh_tray(&app);
     panel::refresh_clipboard_panel_policy(&app)
         .map_err(|error| AppError::Internal(error.to_string()))?;
     *crate::global_state::HOTKEY_STRING.lock().unwrap() = fresh.main_hotkey.clone();
@@ -306,7 +287,7 @@ pub fn set_tray_visible(
     visible: bool,
 ) -> AppResult<()> {
     state.hide_tray_icon.store(!visible, Ordering::Relaxed);
-    if let Some(tray) = app_handle.tray_by_id("main_tray") {
+    if let Some(tray) = app_handle.tray_by_id(crate::app::tray::TRAY_ID) {
         let _ = tray.set_visible(visible);
     }
     let db_state = app_handle.state::<DbState>();
