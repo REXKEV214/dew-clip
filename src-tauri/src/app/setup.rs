@@ -14,6 +14,7 @@ use crate::infrastructure::repository::settings_repo::{
 use crate::infrastructure::repository::tag_repo::SqliteTagRepository;
 use crate::services::encryption_queue::init_encryption_queue;
 use crate::services::sensitive_align::spawn_sensitive_alignment;
+use crate::services::updater;
 
 #[cfg(target_os = "macos")]
 fn register_macos_wake_handler(app_handle: AppHandle) {
@@ -26,6 +27,7 @@ fn register_macos_wake_handler(app_handle: AppHandle) {
     let center = NSWorkspace::sharedWorkspace().notificationCenter();
     let wake_handler = RcBlock::new(move |_notification: NonNull<NSNotification>| {
         crate::services::recording_pause::check_expired_pause(&app_handle);
+        updater::check_after_wake(app_handle.clone());
         tauri::async_runtime::spawn(crate::services::paste_queue::check_idle_after_wake(app_handle.clone()));
         let app_handle = app_handle.clone();
         std::thread::spawn(move || {
@@ -151,6 +153,7 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     crate::app::commands::thumbnail_cmd::init_thumbnail_cache(app.handle());
     crate::app::data_directory::prepare_session(&app_dir)?;
     setup_state(app, conn_arc.clone(), &settings, app_dir.clone());
+    app.manage(updater::UpdateState::load(app.package_info().version.clone(), &conn_arc.lock().unwrap())?);
     app.manage(crate::services::recording_pause::RecordingPause::default());
     crate::services::clipboard::start_session_file_sweeper(app.handle().clone());
     app.manage(EncryptionQueueState(init_encryption_queue(app_handle.clone())));
@@ -168,6 +171,7 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
     // 9. Tray Setup
     crate::app::tray::setup_tray(app, settings.hide_tray_icon)?;
+    updater::start_scheduler(app_handle, settings.first_open);
 
     Ok(())
 }
@@ -255,6 +259,7 @@ pub struct StartupSettings {
     pub history_retention_days: u64,
     pub storage_limit_mb: u64,
     pub download_remote_images: bool,
+    pub update_check_enabled: bool,
     pub remote_image_max_bytes: u64,
     pub silent_start: bool,
     pub delete_after_paste: bool,
@@ -299,6 +304,7 @@ pub(crate) fn load_settings(repo: &SqliteSettingsRepository) -> rusqlite::Result
         history_retention_days: get("app.history_retention_days", "0").parse().unwrap_or(0),
         storage_limit_mb: get("app.storage_limit_mb", "0").parse().unwrap_or(0),
         download_remote_images: flag("app.download_remote_images", true),
+        update_check_enabled: flag(updater::ENABLED_KEY, true),
         remote_image_max_bytes: crate::database::remote_image_max_bytes(&get("app.remote_image_max_mb", "8")),
         silent_start: flag("app.silent_start", false),
         delete_after_paste: flag("app.delete_after_paste", false),
@@ -366,6 +372,7 @@ pub(crate) fn settings_state_from(s: &StartupSettings) -> SettingsState {
         history_retention_days: AtomicU64::new(s.history_retention_days),
         storage_limit_mb: AtomicU64::new(s.storage_limit_mb),
         download_remote_images: AtomicBool::new(s.download_remote_images),
+        update_check_enabled: AtomicBool::new(s.update_check_enabled),
         remote_image_max_bytes: AtomicU64::new(s.remote_image_max_bytes),
         capture_files: AtomicBool::new(true),
         capture_rich_text: AtomicBool::new(true),
@@ -554,15 +561,56 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     if window.label() != "main" {
         return;
     }
+    use tauri::Emitter;
     match event {
         tauri::WindowEvent::Focused(false) => {
             panel::remember_frontmost_external_app();
         }
         tauri::WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
-            let _ = crate::app::window_manager::hide_window_cmd(window.app_handle().clone());
+            let _ = window.emit_to("main", "window-close-requested", ());
         }
         _ => {}
+    }
+}
+
+#[cfg(target_os = "macos")]
+const CLOSE_WINDOW_MENU: &str = "close_panel_window";
+
+#[cfg(target_os = "macos")]
+pub fn application_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, WINDOW_SUBMENU_ID};
+
+    let menu = Menu::default(app)?;
+    let close_text = PredefinedMenuItem::close_window(app, None)?.text()?;
+    for item in menu.items()? {
+        let Some(submenu) = item.as_submenu() else { continue };
+        if submenu.id().as_ref() != WINDOW_SUBMENU_ID && submenu.text()? != "File" {
+            continue;
+        }
+        for (index, item) in submenu.items()?.iter().enumerate() {
+            let Some(predefined) = item.as_predefined_menuitem() else { continue };
+            if predefined.text()? == close_text {
+                submenu.remove_at(index)?;
+                // Keep the native action, but let WKWebView receive the key for IME and hotkey recording.
+                let close = MenuItem::with_id(app, CLOSE_WINDOW_MENU, &close_text, true, None::<&str>)?;
+                submenu.insert(&close, index)?;
+                break;
+            }
+        }
+    }
+    Ok(menu)
+}
+
+#[cfg(target_os = "macos")]
+pub fn handle_application_menu(app: &AppHandle, event: tauri::menu::MenuEvent) {
+    use tauri::Emitter;
+    use tauri_nspanel::ManagerExt;
+
+    if event.id.as_ref() == CLOSE_WINDOW_MENU
+        && app.get_webview_panel("main").is_ok_and(|panel| panel.as_panel().isKeyWindow())
+    {
+        let _ = app.emit_to("main", "window-close-requested", ());
     }
 }
 

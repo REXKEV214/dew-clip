@@ -4,7 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { ask, message, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Check, ChevronRight, RotateCcw } from "lucide-react";
-import { version } from "../../../../package.json";
 import { FaviconGithub } from "./FaviconGithub";
 import appLogo from "../../../assets/logo.png";
 import AppSelectorModal from "./AppSelectorModal";
@@ -15,6 +14,8 @@ import { HotkeyField, Row, Section, Segmented, Toggle } from "./controls";
 import { chosenApp, unchosenFallback } from "../utils/defaultApps";
 import type { AppCleanupPolicy, InstalledAppOption } from "../types";
 import type { SettingsStore } from "../../app/useSettings";
+import type { useUpdateStatus } from "../../app/useUpdateStatus";
+import { UpdateSettings } from "../../app/UpdateNotice";
 import type { TranslationConfig } from "../../translate/config";
 import type { ConfirmDialogState, Locale, WindowPinMode } from "../../../shared/types";
 import { withNativeDialog } from "../../../shared/lib/focus";
@@ -35,6 +36,7 @@ const appDisplayName = (path: string) => (path.split(/[/\\]/).pop() || path).rep
 
 interface SettingsPageProps {
   settings: SettingsStore;
+  updates: ReturnType<typeof useUpdateStatus>;
   ignoredApps: {
     ignored: AppCleanupPolicy[];
     excludePaths: string[];
@@ -56,6 +58,7 @@ interface SettingsPageProps {
 
 const SettingsPage = ({
   settings,
+  updates,
   ignoredApps,
   openConfirm,
   closeConfirm,
@@ -120,6 +123,8 @@ const SettingsPage = ({
       const reason = String(error);
       if (reason.includes("hotkey_conflict")) {
         pushToast(t("hotkey_conflict").replace("{name}", t(sequential ? "wake_hotkey" : "sequential_paste_hotkey")), 4000);
+      } else if (reason.includes("hotkey_reserved_close")) {
+        pushToast(t("hotkey_reserved_close"), 4000);
       } else if (reason.includes("sequential_invalid_hotkey")) {
         pushToast(t("sequential_invalid_hotkey"), 4000);
       } else {
@@ -276,6 +281,13 @@ const SettingsPage = ({
               { value: "zh", label: t("language_zh") },
               { value: "en", label: t("language_en") },
             ]}
+          />
+        </Row>
+        <Row label={t("update_automatic")} hint={t("update_automatic_hint")}>
+          <Toggle
+            label={t("update_automatic")}
+            checked={flag("app.update_check_enabled", true)}
+            onChange={(enabled) => save("app.update_check_enabled", String(enabled))}
           />
         </Row>
         {!accessibilityGranted && (
@@ -495,7 +507,15 @@ const SettingsPage = ({
           <img className="brand-logo" src={appLogo} alt="" draggable={false} />
           <span className="brand-name">DewClip</span>
         </div>
-        <div className="brand-version">{version}</div>
+        <UpdateSettings
+          t={t}
+          status={updates.snapshot}
+          checking={updates.manualChecking}
+          result={updates.manualResult}
+          onCheck={() => void updates.check()}
+          onView={updates.openDialog}
+          onOpenReleasePage={updates.openReleasePage}
+        />
         <div className="brand-author">by REXKEV214</div>
         <button type="button" className="link-button brand-link" onClick={() => void openUrl(GITHUB_URL)}>
           <FaviconGithub />

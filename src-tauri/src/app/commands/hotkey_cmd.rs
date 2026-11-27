@@ -39,7 +39,19 @@ fn should_register_main_hotkey(hotkey: &str) -> bool {
     }
 
     // Never turn a Win+V setting into Command+V and intercept system paste.
-    !is_win_v_hotkey(hotkey)
+    !is_win_v_hotkey(hotkey) && !is_close_window_shortcut(hotkey)
+}
+
+fn is_close_window_shortcut(hotkey: &str) -> bool {
+    cfg!(target_os = "macos") &&
+        parse_shortcut(hotkey).is_some_and(|shortcut| Some(shortcut) == parse_shortcut("Command+W"))
+}
+
+fn validate_close_window_shortcut(hotkey: &str) -> AppResult<()> {
+    if is_close_window_shortcut(hotkey) {
+        return Err(AppError::Validation("hotkey_reserved_close".into()));
+    }
+    Ok(())
 }
 
 pub(crate) fn parse_shortcut(hotkey: &str) -> Option<Shortcut> {
@@ -149,6 +161,7 @@ pub fn sync_registered_hotkeys_on_main_thread(app_handle: &AppHandle) {
 
 #[tauri::command]
 pub fn register_hotkey(app_handle: AppHandle, hotkey: String) -> AppResult<()> {
+    validate_close_window_shortcut(&hotkey)?;
     let settings = app_handle.state::<SettingsState>();
     let previous = settings.main_hotkey.lock().unwrap().clone();
     let sequential = settings.sequential_paste_hotkey.lock().unwrap().clone();
@@ -176,6 +189,7 @@ pub fn register_hotkey(app_handle: AppHandle, hotkey: String) -> AppResult<()> {
 
 #[tauri::command]
 pub fn set_sequential_hotkey(app_handle: AppHandle, hotkey: String) -> AppResult<()> {
+    validate_close_window_shortcut(&hotkey)?;
     let settings = app_handle.state::<SettingsState>();
     let main = settings.main_hotkey.lock().unwrap().clone();
     validate_distinct_hotkeys(&main, &hotkey)?;
@@ -250,6 +264,7 @@ pub fn test_hotkey_available(
     allow_typing: Option<bool>,
     for_sequential: Option<bool>,
 ) -> AppResult<bool> {
+    validate_close_window_shortcut(&hotkey)?;
     if hotkey.is_empty()
         || hotkey.eq_ignore_ascii_case("MouseMiddle")
         || hotkey.eq_ignore_ascii_case("MButton")
@@ -304,6 +319,17 @@ pub fn test_hotkey_available(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn command_w_cannot_be_registered_as_a_global_hotkey() {
+        for keyboard in ["Command+W", "Super+KeyW", "Cmd+w"] {
+            assert!(!super::should_register_main_hotkey(keyboard));
+            assert!(super::validate_close_window_shortcut(keyboard).is_err());
+        }
+        assert!(super::should_register_main_hotkey("Command+Shift+W"));
+        assert!(super::should_register_main_hotkey("Ctrl+W"));
+    }
+
     #[test]
     fn wake_and_sequential_hotkeys_cannot_share_a_normalized_binding() {
         for (wake, sequential) in [("Alt+V", "Option+v"), ("Option+v", "Alt+V"), ("Win+S", "Command+s")] {

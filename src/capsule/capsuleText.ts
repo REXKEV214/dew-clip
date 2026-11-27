@@ -95,7 +95,7 @@ const UNKNOWN_APPS = new Set(["", "unknown", "macos app"]);
 export const knownAppName = (name: string) => (UNKNOWN_APPS.has(name.trim().toLowerCase()) ? "" : name.trim());
 
 export const capsuleShowsCheck = ({ sequential }: Pick<CapsulePayload, "sequential">) =>
-  sequential?.kind !== "failed" && sequential?.kind !== "skipped";
+  sequential?.kind !== "failed" && sequential?.kind !== "skipped" && sequential?.kind !== "empty";
 
 export const capsuleSubtitle = (
   payload: Pick<CapsulePayload, "kind" | "preview" | "appName" | "sequential">,

@@ -8,10 +8,13 @@ export interface KeyInput {
   altKey: boolean;
   shiftKey: boolean;
   isComposing: boolean;
+  repeat?: boolean;
 }
 
 export interface KeyContext {
   dialogOpen: boolean;
+  recordingHotkey?: boolean;
+  settingFixedPosition?: boolean;
   /** Focus is in the search box. */
   inSearch: boolean;
   /** Focus is in any text field, the search box included. */
@@ -36,6 +39,7 @@ export type KeyAction =
   /** Swallowed, nothing else happens. */
   | { type: "consume" }
   | { type: "escape" }
+  | { type: "closeWindow" }
   | { type: "focusSearch" }
   | { type: "cycleType"; step: 1 | -1 }
   | { type: "select"; index: number }
@@ -66,12 +70,19 @@ const isDelete = (input: KeyInput) => input.key === "Delete" || (input.metaKey &
 
 /** What a key press does in the main window. */
 export const resolveKey = (input: KeyInput, ctx: KeyContext): KeyAction => {
-  if (input.isComposing || input.key === "Process" || ctx.dialogOpen) return IGNORE;
+  if (input.isComposing || input.key === "Process") return IGNORE;
+  const command = isCommand(input);
+  const key = input.key.toLowerCase();
+  const close = command && key === "w";
+  if (ctx.dialogOpen) return close ? CONSUME : IGNORE;
+  if (close) {
+    if (ctx.recordingHotkey) return IGNORE;
+    if (ctx.settingFixedPosition || input.repeat) return CONSUME;
+    return { type: "closeWindow" };
+  }
   if (input.key === "Escape") return { type: "escape" };
   if (ctx.blocked) return IGNORE;
 
-  const command = isCommand(input);
-  const key = input.key.toLowerCase();
   if (command && key === "a") {
     // A text field keeps its own select-all.
     if (ctx.inField) return IGNORE;

@@ -201,6 +201,7 @@ export const HotkeyField = ({
   return (
     <div
       className={`hotkey-field${recording ? " is-recording" : ""}`}
+      data-hotkey-recording={recording || undefined}
       role="button"
       tabIndex={0}
       aria-label={label}

@@ -2,12 +2,13 @@ use crate::app_state::{PasteQueue, SequentialSessionKind};
 use crate::database::DbState;
 use crate::infrastructure::repository::settings_repo::SettingsRepository;
 use crate::services::recording_pause::{self, RecordingPauseStatus};
+use crate::services::updater::UpdateState;
 use serde::Deserialize;
 use std::sync::OnceLock;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri::{App, AppHandle, Manager};
+use tauri::{App, AppHandle, Emitter, Manager};
 
 pub const TRAY_ID: &str = "main_tray";
 const ICON: &[u8] = include_bytes!("../../icons/tray-icon.png");
@@ -27,6 +28,7 @@ struct Labels {
     paused_tooltip: String,
     sequential_start: String,
     sequential_end: String,
+    update_available: String,
 }
 
 impl Labels {
@@ -54,6 +56,10 @@ impl Labels {
                 self.sequential_end.replace("{count}", &count.to_string()),
             )
         }
+    }
+
+    fn update(&self, version: Option<&str>) -> Option<String> {
+        version.map(|version| self.update_available.replace("{version}", version))
     }
 }
 
@@ -146,7 +152,11 @@ fn rebuild_tray(app: &AppHandle, tray: &TrayIcon) -> tauri::Result<()> {
         labels.sequential(queue.kind, queue.items.len())
     };
     menu.append(&MenuItem::with_id(app, id, label, true, None::<&str>)?)?;
-    menu.append_items(&[&PredefinedMenuItem::separator(app)?, &quit])?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    if let Some(label) = labels.update(app.state::<UpdateState>().available_version().as_deref()) {
+        menu.append(&MenuItem::with_id(app, "show_update", label, true, None::<&str>)?)?;
+    }
+    menu.append(&quit)?;
     tray.set_menu(Some(menu))?;
     #[cfg(target_os = "macos")]
     tray.set_icon_with_as_template(Some(tray_icon(status.paused)?), true)?;
@@ -166,6 +176,12 @@ pub fn setup_tray(app: &App, hide_tray: bool) -> tauri::Result<()> {
                 }
                 "quit" => {
                     crate::app::system::request_app_exit(app);
+                    return;
+                }
+                "show_update" => {
+                    if crate::app::window_manager::focus_clipboard_window(app.clone()).is_ok() {
+                        let _ = app.emit_to("main", "open-update-dialog", ());
+                    }
                     return;
                 }
                 "resume_recording" => {
@@ -327,5 +343,13 @@ mod tests {
             );
             assert_eq!(zh.sequential(kind, 2).1, "结束顺序粘贴（剩 2 项）");
         }
+    }
+
+    #[test]
+    fn update_menu_item_uses_the_language_and_requires_an_available_version() {
+        assert_eq!(labels(true).update(Some("1.2.0")).as_deref(), Some("Update Available (v1.2.0)…"));
+        assert_eq!(labels(false).update(Some("1.2.0")).as_deref(), Some("发现新版本 v1.2.0…"));
+        assert_eq!(labels(true).update(None), None);
+        assert_eq!(labels(false).update(None), None);
     }
 }

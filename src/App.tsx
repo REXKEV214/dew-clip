@@ -14,7 +14,10 @@ import { useHistory } from "./features/app/useHistory";
 import { useHistorySelection } from "./features/app/useHistorySelection";
 import { useSidePanel } from "./features/app/useSidePanel";
 import { usePasteActions } from "./features/app/usePasteActions";
-import { useKeyboard } from "./features/app/useKeyboard";
+import { hasOpenDialog, useKeyboard } from "./features/app/useKeyboard";
+import { useWindowClose, type UnsavedChangesHandle } from "./features/app/useWindowClose";
+import { useUpdateStatus } from "./features/app/useUpdateStatus";
+import { UpdateBanner, UpdateDialog } from "./features/app/UpdateNotice";
 import { useShortcutBadges } from "./features/app/useShortcutBadges";
 import ClipboardCard from "./features/clipboard/ClipboardCard";
 import ClipboardList, { type ClipboardListHandle } from "./features/clipboard/ClipboardList";
@@ -81,6 +84,8 @@ const App = () => {
     .map(({ label }) => label).join("");
 
   const [showSettings, setShowSettings] = useState(false);
+  const showSettingsRef = useRef(showSettings);
+  showSettingsRef.current = showSettings;
   const liveSearch = useLiveSearch(SEARCH_DELAY_MS);
   const { draft, search, clear: resetSearch } = liveSearch;
   const [typeFilter, setTypeFilter] = useState<TypeFilter | null>(null);
@@ -95,6 +100,9 @@ const App = () => {
     setIsWindowPinned(pinned);
   }, []);
   const [settingFixedPosition, setSettingFixedPosition] = useState(false);
+  const updateError = () => pushToast(t("update_failed"));
+  const updates = useUpdateStatus(() => !settingFixedPosition && !hasOpenDialog(), updateError);
+  const { dialogRelease, snapshot: updateStatus } = updates;
   const [editing, setEditing] = useState<ClipboardEntry | null>(null);
   const [batchItems, setBatchItems] = useState<ClipboardEntry[]>([]);
   const [batchDeleting, setBatchDeleting] = useState(false);
@@ -351,6 +359,7 @@ const App = () => {
   };
 
   const batchDeletingRef = useRef(false);
+  const batchPastingRef = useRef(false);
   const deleteBatch = useCallback(
     async (frozen: EntryState[]) => {
       batchDeletingRef.current = true;
@@ -399,7 +408,7 @@ const App = () => {
   }, [closeConfirm, deleteBatch, openConfirm, t]);
 
   // A preview temporarily borrows the panel area from favorites or the queue.
-  const panelUnderPreview = useRef<SidePanelKind | null>(null);
+  const panelUnderPreview = useRef<SidePanelKind | null | undefined>(undefined);
 
   const showPreview = useCallback(
     (entry: ClipboardEntry) => {
@@ -411,9 +420,11 @@ const App = () => {
   );
 
   const hidePreview = useCallback(() => {
+    const previous = panelUnderPreview.current;
+    if (previous === undefined) return;
+    panelUnderPreview.current = undefined;
     setPreviewEntry(null);
-    const restore = panelAfterPreview(panelUnderPreview.current, sequentialActiveRef.current);
-    panelUnderPreview.current = null;
+    const restore = panelAfterPreview(previous, sequentialActiveRef.current);
     void (restore ? openPanel(restore) : closePanel());
   }, [closePanel, openPanel]);
 
@@ -432,6 +443,34 @@ const App = () => {
   // 常用's editor: Esc closes it before the panel, so unsaved text isn't lost.
   const [favoriteEditing, setFavoriteEditing] = useState(false);
   const favoritesRef = useRef<FavoritesPanelHandle>(null);
+  const editRef = useRef<UnsavedChangesHandle>(null);
+  const translateRef = useRef<UnsavedChangesHandle>(null);
+  const typingInPanel =
+    panel.kind === "edit" || panel.kind === "translate" || (panel.kind === "favorites" && favoriteEditing);
+  const cancelPreview = useSpacePreview({
+    enabled: !showSettings && !settingFixedPosition && !typingInPanel && !batchMode,
+    items,
+    selectedIndex,
+    onOpen: showPreview,
+    onClose: hidePreview,
+  });
+  const windowClose = useWindowClose({
+    t,
+    blocked: () => settingFixedPosition || confirmDialog.show || batchDeletingRef.current ||
+      batchPastingRef.current || favoritesRef.current?.isSaving() === true,
+    hasUnsavedChanges: () => Boolean(
+      favoritesRef.current?.hasUnsavedChanges() ||
+      editRef.current?.hasUnsavedChanges() ||
+      translateRef.current?.hasUnsavedChanges()
+    ),
+    hideWindow: async () => {
+      panelUnderPreview.current = undefined;
+      cancelPreview.current();
+      await invoke("escape_window_cmd");
+    },
+    openConfirm,
+    closeConfirm,
+  });
 
   const dismiss = useCallback((inSearch: boolean) => {
     if (settingFixedPosition) return true;
@@ -462,8 +501,6 @@ const App = () => {
   ]);
 
   // 编辑, 翻译 and 常用's editor take typing: the list's keys stay off while they are open.
-  const typingInPanel =
-    panel.kind === "edit" || panel.kind === "translate" || (panel.kind === "favorites" && favoriteEditing);
   const listKeys = !showSettings && !batchMode && !typingInPanel;
   const showShortcutBadges = useShortcutBadges(listKeys && !settingFixedPosition && !confirmDialog.show);
 
@@ -485,6 +522,8 @@ const App = () => {
     flushSearch: () => liveSearch.flush(draft),
     isSearchComposing: (inSearch) => inSearch ? liveSearch.isComposing() : favoritesRef.current?.isSearchComposing() === true,
     dismiss,
+    ...windowClose,
+    settingFixedPosition,
     panel: panel.kind,
     blocked: showSettings || settingFixedPosition,
     batchCount: batchItems.length,
@@ -492,14 +531,6 @@ const App = () => {
     startBatchSelectAll,
     toggleSelectAll,
     requestBatchDelete,
-  });
-
-  useSpacePreview({
-    enabled: !showSettings && !settingFixedPosition && !typingInPanel && !batchMode,
-    items,
-    selectedIndex,
-    onOpen: showPreview,
-    onClose: hidePreview,
   });
 
   // The list keeps its own width while the side panel opens or shrinks away.
@@ -532,14 +563,16 @@ const App = () => {
         setTypeFilter(null);
         clearSelection();
         listRef.current?.scrollToTop();
-        if (sequentialActiveRef.current) openQueuePanel();
+        if (sequentialActiveRef.current && !showSettingsRef.current) openQueuePanel();
       }),
       listen<boolean>("window-pinned-changed", ({ payload }) => updateWindowPinned(payload)),
-      // A close (hotkey, red button) was refused because the window is pinned.
+      // The wake shortcut tried to hide a window pinned above other apps.
       listen("window-pinned-close-blocked", () => {
         if (pinModeRef.current === "always_on_top") pushToastRef.current(tRef.current("pinned_esc_hint"));
       }),
       listen("side-panel-collapsed", () => {
+        panelUnderPreview.current = undefined;
+        cancelPreview.current();
         setEditing(null);
         setBatchItems([]);
         setPreviewEntry(null);
@@ -548,7 +581,7 @@ const App = () => {
     return () => {
       subscriptions.forEach((subscription) => void subscription.then((off) => off()));
     };
-  }, [clearSelection, openQueuePanel, updateWindowPinned]);
+  }, [cancelPreview, clearSelection, openQueuePanel, updateWindowPinned]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -696,12 +729,13 @@ const App = () => {
           sequentialActive={sequentialActive}
           sequentialCount={queue.items.length}
           sequentialHotkey={sequentialHotkey}
+          updateAvailable={updateStatus?.available}
           onBack={leaveSettings}
           onToggleFavorites={toggleFavorites}
           onToggleSequential={sequentialActive ? stopSequential : () => void invoke("start_sequential_session").catch(sequentialFailed)}
           onTogglePinned={togglePinned}
           onSelectPinMode={(mode) => selectPinMode(mode, true)}
-          onCloseWindow={() => void invoke("hide_window_cmd").catch(console.error)}
+          onCloseWindow={windowClose.requestCloseWindow}
           onClearHistory={clearHistory}
           onOpenSettings={() => {
             closeSidePanel();
@@ -716,10 +750,13 @@ const App = () => {
             onResume={() => void invoke("resume_recording").catch((error) => pushToast(t("save_failed") + formatError(error, t)))}
           />
         )}
+        <UpdateBanner t={t} status={updateStatus} showSettings={showSettings}
+          onView={updates.openDialog} onDismiss={updates.dismiss} />
 
         {showSettings ? (
           <SettingsPage
             settings={settings}
+            updates={updates}
             ignoredApps={ignoredApps}
             openConfirm={openConfirm}
             closeConfirm={closeConfirm}
@@ -779,6 +816,7 @@ const App = () => {
           )}
           {panel.kind === "edit" && editing && (
             <EditPanel
+              ref={editRef}
               key={`${editing.id}:${editing.created_at ?? 0}`}
               t={t}
               entry={editing}
@@ -791,6 +829,7 @@ const App = () => {
           )}
           {panel.kind === "translate" && editing && translationConfig && (
             <TranslatePanel
+              ref={translateRef}
               key={`${editing.id}:${editing.created_at ?? 0}`}
               t={t}
               entry={editing}
@@ -825,6 +864,7 @@ const App = () => {
               canSelectAll={settled && items.length > 0}
               hasMore={hasMore}
               deleting={batchDeleting}
+              onPastingChange={(pasting) => { batchPastingRef.current = pasting; }}
               onToggleSelectAll={toggleSelectAll}
               onDeleteSelected={requestBatchDelete}
               onReorder={setBatchItems}
@@ -850,6 +890,16 @@ const App = () => {
       )}
 
       <ToastContainer toasts={toasts} />
+      {dialogRelease && updateStatus && (
+        <UpdateDialog
+          t={t}
+          currentVersion={updateStatus.currentVersion}
+          release={dialogRelease}
+          onLater={() => updates.later(dialogRelease.version)}
+          onSkip={() => updates.skip(dialogRelease.version)}
+          onOpenReleasePage={updates.openReleasePage}
+        />
+      )}
       <ConfirmDialog
         state={confirmDialog}
         confirmLabel={confirmDialog.confirmLabel ?? t("confirm")}

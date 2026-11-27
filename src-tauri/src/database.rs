@@ -360,6 +360,7 @@ pub const DEFAULT_SETTINGS: &[(&str, &str)] = &[
     ("app.history_retention_days", "0"),
     ("app.storage_limit_mb", "0"),
     ("app.download_remote_images", "true"),
+    (crate::services::updater::ENABLED_KEY, "true"),
     ("app.remote_image_max_mb", "8"),
     ("app.delete_after_paste", "false"),
     ("app.move_to_top_after_paste", "true"),

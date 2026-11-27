@@ -11,6 +11,7 @@ pub struct SettingsState {
     pub history_retention_days: AtomicU64,
     pub storage_limit_mb: AtomicU64,
     pub download_remote_images: AtomicBool,
+    pub update_check_enabled: AtomicBool,
     pub remote_image_max_bytes: AtomicU64,
     /// Always on in DewClip: the 文件 / 视频 tabs need file copies.
     pub capture_files: AtomicBool,
@@ -46,6 +47,7 @@ impl SettingsState {
             history_retention_days,
             storage_limit_mb,
             download_remote_images,
+            update_check_enabled,
             remote_image_max_bytes,
             capture_files,
             capture_rich_text,
@@ -68,6 +70,7 @@ impl SettingsState {
         self.history_retention_days.store(history_retention_days.into_inner(), Ordering::Relaxed);
         self.storage_limit_mb.store(storage_limit_mb.into_inner(), Ordering::Relaxed);
         self.download_remote_images.store(download_remote_images.into_inner(), Ordering::Relaxed);
+        self.update_check_enabled.store(update_check_enabled.into_inner(), Ordering::Relaxed);
         self.remote_image_max_bytes.store(remote_image_max_bytes.into_inner(), Ordering::Relaxed);
         self.capture_files.store(capture_files.into_inner(), Ordering::Relaxed);
         self.capture_rich_text.store(capture_rich_text.into_inner(), Ordering::Relaxed);
@@ -164,6 +167,7 @@ mod tests {
         repo.set("app.history_retention_days", "30").unwrap();
         repo.set("app.storage_limit_mb", "1024").unwrap();
         repo.set("app.download_remote_images", "false").unwrap();
+        repo.set(crate::services::updater::ENABLED_KEY, "false").unwrap();
         repo.set("app.remote_image_max_mb", "16").unwrap();
         let running = settings_state_from(&load_settings(&repo).unwrap());
         assert!(running.delete_after_paste.load(Ordering::Relaxed));
@@ -171,6 +175,7 @@ mod tests {
         assert_eq!(running.history_retention_days.load(Ordering::Relaxed), 30);
         assert_eq!(running.storage_limit_mb.load(Ordering::Relaxed), 1024);
         assert!(!running.download_remote_images.load(Ordering::Relaxed));
+        assert!(!running.update_check_enabled.load(Ordering::Relaxed));
         assert_eq!(running.remote_image_max_bytes.load(Ordering::Relaxed), 16 * crate::database::BYTES_PER_MB);
 
         repo.clear().unwrap();
@@ -183,6 +188,7 @@ mod tests {
         assert_eq!(running.history_retention_days.load(Ordering::Relaxed), 0);
         assert_eq!(running.storage_limit_mb.load(Ordering::Relaxed), 0);
         assert!(running.download_remote_images.load(Ordering::Relaxed));
+        assert!(running.update_check_enabled.load(Ordering::Relaxed));
         assert_eq!(running.remote_image_max_bytes.load(Ordering::Relaxed), 8 * crate::database::BYTES_PER_MB);
     }
 }

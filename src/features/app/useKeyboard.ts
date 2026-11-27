@@ -21,6 +21,9 @@ interface KeyboardOptions {
   searchPending: boolean;
   flushSearch: () => void;
   isSearchComposing: (inSearch: boolean) => boolean;
+  isComposing: () => boolean;
+  requestCloseWindow: () => void;
+  settingFixedPosition?: boolean;
   /** Esc: closes what's open. False when nothing was. */
   dismiss: (inSearch: boolean) => boolean;
   panel: SidePanelKind | null;
@@ -39,6 +42,7 @@ export const isField = (target: EventTarget | null) =>
   (target.matches("input, textarea, select") || target.isContentEditable);
 
 export const hasOpenDialog = () => document.querySelector("[aria-modal='true']") !== null;
+export const isRecordingHotkey = () => document.querySelector("[data-hotkey-recording='true']") !== null;
 
 const hasActiveTextSelection = (target: EventTarget | null) =>
   target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
@@ -55,10 +59,14 @@ export const useKeyboard = (options: KeyboardOptions) => {
       if (event.defaultPrevented && !isBrowserFindSuppressed(event)) return;
       if ((event.key === "ArrowUp" || event.key === "ArrowDown") && event.target instanceof Element &&
           event.target.closest("[data-queue-reorder]")) return;
+      if ((event.key === "Enter" || event.key === " ") && event.target instanceof Element &&
+          event.target.closest(".window-close")) return;
       const inSearch = event.target instanceof HTMLElement && event.target.classList.contains("searchbox-input");
-      if (event.keyCode === 229 || current.isSearchComposing(inSearch)) return;
+      if (event.keyCode === 229 || current.isSearchComposing(inSearch) || current.isComposing()) return;
       const action = resolveKey(event, {
         dialogOpen: hasOpenDialog(),
+        recordingHotkey: isRecordingHotkey(),
+        settingFixedPosition: current.settingFixedPosition,
         inSearch,
         inField: isField(event.target),
         panel: current.panel,
@@ -76,9 +84,12 @@ export const useKeyboard = (options: KeyboardOptions) => {
       const selected = current.selectedIndex === null ? undefined : current.items[current.selectedIndex];
 
       switch (action.type) {
+        case "closeWindow":
+          current.requestCloseWindow();
+          return;
         case "escape":
           if (isField(event.target)) (event.target as HTMLElement).blur();
-          // escape_window_cmd also unpins: Esc is the only way out of a pinned window.
+          // escape_window_cmd also unpins.
           if (!current.dismiss(inSearch)) invoke("escape_window_cmd").catch(console.error);
           return;
         case "focusSearch":

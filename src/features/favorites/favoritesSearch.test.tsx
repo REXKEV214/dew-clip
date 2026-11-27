@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act } from "react";
+import { act, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { Reorder } from "framer-motion";
@@ -8,6 +8,7 @@ import { translations, type TranslationKey } from "../../locales";
 import { installBrowserAcceleratorBlocker } from "../../shared/lib/blockBrowserAccelerators";
 import type { FavoriteItem } from "../../shared/types";
 import { FavoriteRow } from "./FavoritesPanel";
+import type { UnsavedChangesHandle } from "../app/useWindowClose";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -21,8 +22,8 @@ const press = (name: string, modifiers: KeyboardEventInit = {}) => {
   act(() => document.activeElement!.dispatchEvent(event));
   return event;
 };
-const edit = (input: HTMLInputElement, value: string) => act(() => {
-  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+const edit = (input: HTMLInputElement | HTMLTextAreaElement, value: string) => act(() => {
+  Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value")!.set!.call(input, value);
   input.dispatchEvent(new Event("input", { bubbles: true }));
 });
 
@@ -83,6 +84,69 @@ test("Escape in the history search clears that field independently of favorites"
   press("Escape");
   expect(mainSearch().value).toBe("");
   expect(favoriteSearch().value).toBe("Report");
+});
+
+test("a new favorite asks before closing if it has a title, tag draft or text", () => {
+  act(() => host.querySelector<HTMLButtonElement>(".side-panel .panel-title button")!.click());
+  const title = host.querySelector<HTMLInputElement>(".favorite-title-input")!;
+  const tag = host.querySelector<HTMLInputElement>(".favorite-tag-box input")!;
+  const text = host.querySelector<HTMLTextAreaElement>(".favorite-textarea")!;
+  const dialog = () => document.body.querySelector('[aria-modal="true"]');
+  for (const [input, value] of [[title, "A phrase"], [tag, "Work"], [text, "Send tomorrow"]] as const) {
+    act(() => input.focus());
+    edit(input, value);
+    expect(press("w", { metaKey: true }).defaultPrevented).toBe(true);
+    expect(dialog()?.getAttribute("aria-label")).toBe("Discard unsaved changes?");
+    expect(input.value).toBe(value);
+    press("Escape");
+    expect(dialog()).toBeNull();
+    expect(document.activeElement).toBe(input);
+    edit(input, "");
+  }
+});
+
+test.each(["text", "file"] as const)("existing favorite %s edits detect metadata and revert cleanly", (kind) => {
+  const favorite: FavoriteItem = {
+    id: 1, content_type: kind, content: "Original phrase",
+    preview: "", source_app: "Notes", sort_order: 1, created_at: 1,
+    paths: kind === "file" ? ["/documents/report.pdf"] : [],
+    title: "Original title", tags: ["Work"],
+  };
+  const editor = createRef<UnsavedChangesHandle>();
+  const noAction = () => {};
+  act(() => root.render(
+    <Reorder.Group axis="y" values={[favorite]} onReorder={noAction}>
+      <FavoriteRow item={favorite} t={(key) => translations.en[key as TranslationKey]} query=""
+        editing editorRef={editor} existingTags={[]} saving={false} pushToast={noAction}
+        onPaste={noAction} onEdit={noAction} onSaveEdit={noAction} onCancelEdit={noAction}
+        onDelete={noAction} onDragEnd={noAction} />
+    </Reorder.Group>
+  ));
+  const dirty = () => editor.current?.hasUnsavedChanges();
+  expect(dirty()).toBe(false);
+  const title = host.querySelector<HTMLInputElement>(".favorite-title-input")!;
+  edit(title, "  Original title  ");
+  expect(dirty()).toBe(false);
+  edit(title, "Different");
+  expect(dirty()).toBe(true);
+  edit(title, favorite.title!);
+  expect(dirty()).toBe(false);
+  const text = host.querySelector<HTMLTextAreaElement>(".favorite-textarea");
+  if (kind === "text") {
+    edit(text!, "");
+    expect(dirty()).toBe(true);
+    edit(text!, favorite.content);
+    expect(dirty()).toBe(false);
+  } else {
+    expect(text).toBeNull();
+  }
+  act(() => host.querySelector<HTMLButtonElement>(".favorite-tag-chip-remove")!.click());
+  expect(dirty()).toBe(true);
+  const tag = host.querySelector<HTMLInputElement>(".favorite-tag-box input")!;
+  edit(tag, "Work");
+  act(() => tag.focus());
+  press("Enter");
+  expect(dirty()).toBe(false);
 });
 
 test("favorites filters immediately across tabs, waits for the IME, and clears with the button", () => {
