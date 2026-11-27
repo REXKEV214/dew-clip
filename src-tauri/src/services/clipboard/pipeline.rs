@@ -1,9 +1,9 @@
-use crate::app_state::{AppDataDir, PasteQueue, SessionHistory, SettingsState};
+use crate::app_state::{AppDataDir, SessionHistory, SettingsState};
 use crate::database::{
     attachment_extension, calc_image_hash, calc_text_hash, is_text_type, stable_bytes_hash,
     DbState, PendingAttachments,
 };
-use crate::domain::models::{ClipboardEntry, EntryIdentity, EntryVersion};
+use crate::domain::models::{ClipboardEntry, EntryVersion};
 use crate::services::clipboard::utils::*;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -23,6 +23,7 @@ pub struct PipelineContext {
     pub source_app: String,
     pub source_app_path: Option<String>,
     pub timestamp: i64,
+    captured_at: std::time::Instant,
     pub entry: Option<ClipboardEntry>,
     pub should_stop: bool,
     pub pending_removals: Vec<i64>,
@@ -41,6 +42,7 @@ impl PipelineContext {
         source_app: String,
         source_app_path: Option<String>,
         timestamp: i64,
+        captured_at: std::time::Instant,
         persistent: bool,
     ) -> Self {
         let data_dir = app_handle.state::<AppDataDir>().0.lock().unwrap().clone();
@@ -50,6 +52,7 @@ impl PipelineContext {
             source_app,
             source_app_path,
             timestamp,
+            captured_at,
             entry: None,
             should_stop: false,
             pending_removals: Vec::new(),
@@ -78,19 +81,21 @@ impl ClipboardPipeline {
                 Box::new(DiscoveryStage),
                 Box::new(TransformationStage),
                 Box::new(PersistenceStage),
-                Box::new(DistributionStage),
             ],
         }
     }
 
     pub fn execute(&self, context: &mut PipelineContext) {
-        let _attachments = crate::database::ATTACHMENT_WRITERS.read().unwrap();
+        let attachments = crate::database::ATTACHMENT_WRITERS.read().unwrap();
         for stage in &self.stages {
             stage.process(context);
             if context.should_stop {
-                break;
+                return;
             }
         }
+        // Distribution can wait for a paste that is cleaning up attachments.
+        drop(attachments);
+        DistributionStage.process(context);
     }
 }
 
@@ -510,28 +515,17 @@ pub struct DistributionStage;
 impl PipelineStage for DistributionStage {
     fn process(&self, ctx: &mut PipelineContext) {
         let entry = ctx.entry.as_ref().unwrap();
-        let settings = ctx.app_handle.state::<SettingsState>();
-
-        for id in ctx.pending_removals.drain(..) {
-            let _ = ctx.app_handle.emit("clipboard-removed", id);
-        }
-
-        // Sequential Queue updates
-        if settings.sequential_mode.load(Ordering::Relaxed) {
-            let queue_state = ctx.app_handle.state::<PasteQueue>();
-            let mut queue = queue_state.0.lock().unwrap();
-            if queue.last_action_was_paste {
-                queue.items.clear();
-                queue.last_action_was_paste = false;
-            }
-            queue.items.push_back(EntryIdentity::from_entry(entry));
+        for id in &ctx.pending_removals {
+            let _ = ctx.app_handle.emit("clipboard-removed", *id);
         }
 
         // Notify
         let _ = ctx
             .app_handle
             .emit("clipboard-updated", truncate_entry_for_ui(entry.clone()));
-        crate::app::capsule::notify_copied(&ctx.app_handle, entry);
+        if !crate::services::paste_queue::on_captured(&ctx.app_handle, entry, ctx.captured_at, &ctx.pending_removals) {
+            crate::app::capsule::notify_copied(&ctx.app_handle, entry);
+        }
 
         if entry.content_type == "image" {
             crate::services::ocr::enqueue(&ctx.app_handle, entry);

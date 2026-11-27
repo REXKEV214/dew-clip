@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { ClipboardEntry } from "../../shared/types";
+import type { ClipboardEntry, SidePanelKind } from "../../shared/types";
 import { hasOpenDialog, isField } from "../app/useKeyboard";
 
 /** A shorter press is just a key tap. */
@@ -8,6 +8,9 @@ const CARD_ID_PREFIX = "clipboard-item-";
 
 /** Files have no preview yet. */
 export const canPreview = (entry: ClipboardEntry) => entry.content_type !== "file";
+
+export const panelAfterPreview = (previous: SidePanelKind | null, sequentialActive: boolean) =>
+  previous === "favorites" || (previous === "queue" && sequentialActive) ? previous : null;
 
 export const entryIdFromCard = (elementId: string | undefined): number | null => {
   if (!elementId?.startsWith(CARD_ID_PREFIX)) return null;

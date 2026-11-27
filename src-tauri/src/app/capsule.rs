@@ -219,6 +219,7 @@ pub struct CapsulePayload {
     /// Thumbnail path of a copied image.
     pub image_path: Option<String>,
     pub file_count: usize,
+    pub sequential: Option<SequentialNotice>,
     // Filled in by `present`.
     pub style: String,
     pub language: String,
@@ -231,7 +232,19 @@ pub struct CapsulePayload {
     pub top_inset: f64,
 }
 
-fn first_line_preview(content: &str) -> String {
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum SequentialNotice {
+    Queued { position: usize, new_round: bool },
+    Pasted { current: usize, total: usize },
+    Done { total: usize },
+    RoundDone { total: usize },
+    Skipped { remaining: usize, hotkey: Option<String>, round_ended: bool },
+    Empty,
+    Failed { reason: &'static str },
+}
+
+pub(crate) fn first_line_preview(content: &str) -> String {
     let line = content.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("");
     let mut preview: String = line.chars().take(PREVIEW_CHARS).collect();
     if line.chars().count() > PREVIEW_CHARS {
@@ -297,6 +310,7 @@ struct CopyNotification {
     entry: ClipboardEntry,
     style: &'static str,
     sequence: u64,
+    sequential: Option<SequentialNotice>,
 }
 
 static COPY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -304,6 +318,14 @@ static PENDING_COPY: (Mutex<Option<CopyNotification>>, Condvar) =
     (Mutex::new(None), Condvar::new());
 
 pub fn notify_copied(app: &AppHandle, entry: &ClipboardEntry) {
+    notify_copy(app, entry, None);
+}
+
+pub fn notify_sequential_queued(app: &AppHandle, entry: &ClipboardEntry, position: usize, new_round: bool) {
+    notify_copy(app, entry, Some(SequentialNotice::Queued { position, new_round }));
+}
+
+fn notify_copy(app: &AppHandle, entry: &ClipboardEntry, sequential: Option<SequentialNotice>) {
     let settings = app.state::<SettingsState>();
     if !settings.capsule_enabled.load(Ordering::Relaxed) {
         return;
@@ -316,6 +338,7 @@ pub fn notify_copied(app: &AppHandle, entry: &ClipboardEntry) {
         entry: entry.clone(),
         style,
         sequence,
+        sequential,
     });
     PENDING_COPY.1.notify_one();
     static WORKER: Once = Once::new();
@@ -328,7 +351,8 @@ pub fn notify_copied(app: &AppHandle, entry: &ClipboardEntry) {
                 .unwrap()
                 .take()
                 .expect("pending copy notification");
-            let payload = payload_for(&notification.app, &notification.entry);
+            let mut payload = payload_for(&notification.app, &notification.entry);
+            payload.sequential = notification.sequential;
             present(
                 &notification.app,
                 payload,
@@ -337,6 +361,14 @@ pub fn notify_copied(app: &AppHandle, entry: &ClipboardEntry) {
             );
         });
     });
+}
+
+pub fn notify_sequential(app: &AppHandle, notice: SequentialNotice, next: Option<(String, String)>) {
+    let style_setting = app.state::<SettingsState>().capsule_style.lock().unwrap().clone();
+    let (kind, preview) = next.unwrap_or_default();
+    let payload = CapsulePayload { kind, preview, sequential: Some(notice), ..Default::default() };
+    let sequence = COPY_SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1;
+    present(app, payload, normalize_style(&style_setting), sequence);
 }
 
 /// 设置页: show what the chosen look looks like.
@@ -383,6 +415,10 @@ fn emit_show(app: &AppHandle, mut payload: CapsulePayload, style: &str, geometry
 }
 
 fn present(app: &AppHandle, payload: CapsulePayload, style: &'static str, sequence: u64) {
+    let duration = match payload.sequential {
+        Some(SequentialNotice::Queued { .. }) | None => show_for(app),
+        Some(_) => Duration::from_millis(1_600),
+    };
     let Some(win) = window(app) else { return };
     let handle = app.clone();
     let _ = win.clone().run_on_main_thread(move || {
@@ -404,7 +440,7 @@ fn present(app: &AppHandle, payload: CapsulePayload, style: &'static str, sequen
             let count = st.count;
             drop(st);
             emit_show(&handle, payload, style, geometry, count, false, seq);
-            schedule_hide(handle, hide_gen);
+            schedule_hide(handle, hide_gen, duration);
             return;
         }
 
@@ -429,7 +465,7 @@ fn present(app: &AppHandle, payload: CapsulePayload, style: &'static str, sequen
         native::order_front(&win);
         emit_show(&handle, payload, style, geometry, 1, true, seq);
         native::set_mask(&win, geometry.expanded, geometry.notch, Some(EXPAND));
-        schedule_hide(handle, hide_gen);
+        schedule_hide(handle, hide_gen, duration);
     });
 }
 
@@ -437,9 +473,9 @@ fn show_for(app: &AppHandle) -> Duration {
     Duration::from_millis(app.state::<SettingsState>().capsule_duration_ms.load(Ordering::Relaxed))
 }
 
-fn schedule_hide(app: AppHandle, hide_gen: u64) {
+fn schedule_hide(app: AppHandle, hide_gen: u64, duration: Duration) {
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(show_for(&app)).await;
+        tokio::time::sleep(duration).await;
         begin_hide(app, hide_gen);
     });
 }

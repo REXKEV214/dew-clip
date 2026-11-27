@@ -5,7 +5,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, CodeXml, File, Files, FileText, Film, Image, Link, Sparkles } from "lucide-react";
 import { applyAccent, mirroredAccent } from "../shared/lib/accent";
-import { capsuleLocale, capsuleSubtitle, capsuleTitle, type CapsulePayload } from "./capsuleText";
+import { capsuleLocale, capsuleShowsCheck, capsuleSubtitle, capsuleTitle, type CapsulePayload } from "./capsuleText";
 
 // The pill itself (its glass or black fill, its size) is the native window,
 // grown by Rust. This page only draws what was copied, and fades it in once
@@ -92,7 +92,7 @@ const Capsule = () => {
             <div className="capsule-text">
               <div className="capsule-title">
                 <span>{title}</span>
-                {payload.count > 1 && (
+                {!payload.sequential && payload.count > 1 && (
                   <motion.span
                     key={payload.count}
                     className="capsule-count"
@@ -108,7 +108,7 @@ const Capsule = () => {
             </div>
             {image ? (
               <img className="capsule-thumb" src={image} alt="" draggable={false} />
-            ) : (
+            ) : capsuleShowsCheck(payload) && (
               <motion.div
                 className="capsule-check"
                 initial={{ scale: 0.6, opacity: 0 }}

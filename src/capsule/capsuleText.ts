@@ -1,7 +1,15 @@
-// Words for the copy capsule. Kept apart from locales.ts so the capsule page
-// stays small.
+import { translations, type TranslationKey } from "../locales";
+import { getHotkeyDisplayTokens } from "../shared/lib/hotkeyDisplay";
 
 export type CapsuleLocale = "zh" | "en";
+
+type SequentialNotice =
+  | { kind: "queued"; position: number; newRound: boolean }
+  | { kind: "pasted"; current: number; total: number }
+  | { kind: "done" | "round_done"; total: number }
+  | { kind: "skipped"; remaining: number; hotkey: string | null; roundEnded: boolean }
+  | { kind: "empty" }
+  | { kind: "failed"; reason: "permission" | "modifiers" | "paste" };
 
 export interface CapsulePayload {
   kind: string;
@@ -10,6 +18,7 @@ export interface CapsulePayload {
   appIcon: string | null;
   imagePath: string | null;
   fileCount: number;
+  sequential?: SequentialNotice | null;
   style: "glass" | "island" | "black";
   language: string;
   count: number;
@@ -59,7 +68,20 @@ export const capsuleLocale = (language: string): CapsuleLocale => {
   return navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
 };
 
-export const capsuleTitle = (payload: Pick<CapsulePayload, "kind" | "fileCount">, locale: CapsuleLocale) => {
+export const capsuleTitle = (payload: Pick<CapsulePayload, "kind" | "fileCount" | "sequential">, locale: CapsuleLocale) => {
+  const t = translations[locale];
+  const notice = payload.sequential;
+  switch (notice?.kind) {
+    case "queued":
+      return notice.newRound ? t.sequential_new_round : t.sequential_queued.replace("{position}", String(notice.position));
+    case "pasted":
+      return t.sequential_progress.replace("{current}", String(notice.current)).replace("{total}", String(notice.total));
+    case "done": return t.sequential_done;
+    case "round_done": return t.sequential_round_done.replace("{total}", String(notice.total));
+    case "skipped": return t.sequential_skipped;
+    case "empty": return t.sequential_empty;
+    case "failed": return t.sequential_paste_failed;
+  }
   const titles = TITLES[locale];
   if (payload.kind === "file" && payload.fileCount > 1) {
     return titles.files.replace("{n}", String(payload.fileCount));
@@ -72,10 +94,36 @@ const UNKNOWN_APPS = new Set(["", "unknown", "macos app"]);
 
 export const knownAppName = (name: string) => (UNKNOWN_APPS.has(name.trim().toLowerCase()) ? "" : name.trim());
 
+export const capsuleShowsCheck = ({ sequential }: Pick<CapsulePayload, "sequential">) =>
+  sequential?.kind !== "failed" && sequential?.kind !== "skipped";
+
 export const capsuleSubtitle = (
-  payload: Pick<CapsulePayload, "kind" | "preview" | "appName">,
+  payload: Pick<CapsulePayload, "kind" | "preview" | "appName" | "sequential">,
   locale: CapsuleLocale
 ) => {
+  const t = translations[locale];
+  const notice = payload.sequential;
+  switch (notice?.kind) {
+    case "pasted": {
+      const next = payload.preview.trim() || t[`type_${payload.kind}` as TranslationKey];
+      return next ? t.sequential_next_preview.replace("{preview}", next) : "";
+    }
+    case "done": return notice.total === 1 ? t.sequential_done_one : t.sequential_done_total.replace("{total}", String(notice.total));
+    case "round_done": return t.sequential_round_again;
+    case "skipped": {
+      if (notice.remaining === 0) return notice.roundEnded ? t.sequential_inactive : t.sequential_empty;
+      const hotkey = getHotkeyDisplayTokens(notice.hotkey ?? undefined, { preferMacSymbols: true })
+        .map(({ label }) => label).join("");
+      return hotkey
+        ? t.sequential_skip_retry.replace("{hotkey}", hotkey)
+        : t.sequential_status_count.replace("{count}", String(notice.remaining));
+    }
+    case "failed": {
+      if (notice.reason === "modifiers") return t.sequential_release_modifiers;
+      if (notice.reason === "permission") return t.sequential_permission_hint;
+      return "";
+    }
+  }
   if (payload.kind === "sample") return SAMPLE_SUBTITLE[locale];
   if (payload.preview.trim()) return payload.preview.trim();
   const app = knownAppName(payload.appName);

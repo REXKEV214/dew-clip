@@ -1,4 +1,5 @@
-use crate::app_state::{AppDataDir, PasteQueue, SessionHistory};
+use crate::app_state::{AppDataDir, SessionHistory};
+use crate::services::{clipboard_ops::PASTE_LOCK, paste_queue};
 use crate::database::DbState;
 use crate::domain::models::{ClipboardEntry, EntryIdentity};
 use crate::error::{AppError, AppResult};
@@ -455,16 +456,16 @@ pub fn search_clipboard_history(
 
 // async for the same reason: deleting an image looks for other references
 // to its file across the whole history.
-#[tauri::command(async)]
-pub fn delete_clipboard_entry(
+#[tauri::command]
+pub async fn delete_clipboard_entry(
     app_handle: AppHandle,
     state: State<'_, DbState>,
     session: State<'_, SessionHistory>,
     app_data: State<'_, AppDataDir>,
-    paste_queue: State<'_, PasteQueue>,
     id: i64,
     created_at: i64,
 ) -> AppResult<()> {
+    let _guard = PASTE_LOCK.lock().await;
     let identity = EntryIdentity { id, created_at };
     if id > 0 {
         let data_dir = app_data.0.lock().unwrap().clone();
@@ -473,7 +474,7 @@ pub fn delete_clipboard_entry(
         }
     }
     session.0.lock().unwrap().retain(|item| !identity.matches(item));
-    paste_queue.0.lock().unwrap().items.retain(|item| *item != identity);
+    paste_queue::remove_deleted_items(&app_handle, |queued| queued == identity).await;
     crate::services::clipboard::sweep_session_files(&app_handle);
     let _ = app_handle.emit("clipboard-changed", ());
     Ok(())
@@ -525,18 +526,18 @@ pub(crate) fn delete_selection(
 /// 批量删除. `items` is the selection frozen when the user confirmed; any entry
 /// that changed since (deleted, its ID reused, pinned or unpinned) fails the
 /// whole call with `selection_changed`. Returns how many entries were deleted.
-#[tauri::command(async)]
-pub fn delete_clipboard_entries(
+#[tauri::command]
+pub async fn delete_clipboard_entries(
     app_handle: AppHandle,
     state: State<'_, DbState>,
     session: State<'_, SessionHistory>,
     app_data: State<'_, AppDataDir>,
-    paste_queue: State<'_, PasteQueue>,
     items: Vec<ConfirmedEntry>,
 ) -> AppResult<usize> {
     if items.is_empty() {
         return Ok(0);
     }
+    let _guard = PASTE_LOCK.lock().await;
     let data_dir = app_data.0.lock().unwrap().clone();
     let deleted = {
         let mut session_items = session.0.lock().unwrap();
@@ -544,7 +545,7 @@ pub fn delete_clipboard_entries(
     };
     {
         let identities: HashSet<_> = items.iter().map(ConfirmedEntry::identity).collect();
-        paste_queue.0.lock().unwrap().items.retain(|item| !identities.contains(item));
+        paste_queue::remove_deleted_items(&app_handle, |queued| identities.contains(&queued)).await;
     }
     crate::services::clipboard::sweep_session_files(&app_handle);
     let _ = app_handle.emit("clipboard-changed", ());
@@ -577,13 +578,14 @@ pub fn get_clipboard_entry_states(
 }
 
 // async: clearing a large history takes seconds.
-#[tauri::command(async)]
-pub fn clear_clipboard_history(
+#[tauri::command]
+pub async fn clear_clipboard_history(
     app_handle: AppHandle,
     state: State<'_, DbState>,
     session: State<'_, SessionHistory>,
     app_data: State<'_, AppDataDir>,
 ) -> AppResult<()> {
+    let _guard = PASTE_LOCK.lock().await;
     let data_dir = app_data.0.lock().unwrap().clone();
     state.repo.clear(Some(&data_dir))?;
     {
@@ -592,7 +594,7 @@ pub fn clear_clipboard_history(
     }
     crate::services::clipboard::sweep_session_files(&app_handle);
     let _ = app_handle.emit("clipboard-changed", ());
-    Ok(())
+    paste_queue::prune_deleted_items(&app_handle).await
 }
 
 #[tauri::command(async)]

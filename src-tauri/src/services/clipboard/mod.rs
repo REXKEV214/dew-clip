@@ -36,6 +36,7 @@ fn single_image_file(paths: &[String]) -> Option<(Vec<u8>, String)> {
 
 #[cfg(target_os = "macos")]
 struct CaptureSnapshot {
+    captured_at: std::time::Instant,
     files: Option<Vec<String>>,
     text: Option<String>,
     html: Option<String>,
@@ -52,6 +53,7 @@ struct CaptureSnapshot {
 #[cfg(target_os = "macos")]
 impl CaptureSnapshot {
     fn read(app: &AppHandle, count: isize) -> Result<Option<Self>, ()> {
+        let captured_at = std::time::Instant::now();
         if native::change_count() != count {
             return Err(());
         }
@@ -70,6 +72,7 @@ impl CaptureSnapshot {
         let persistent = settings.persistent.load(Ordering::Relaxed);
         let files = native::get_clipboard_files();
         let mut snapshot = Self {
+            captured_at,
             files,
             text: None,
             html: None,
@@ -214,6 +217,7 @@ pub fn start_clipboard_monitor(app: AppHandle) {
                     snapshot.source_app,
                     snapshot.source_app_path,
                     snapshot.timestamp,
+                    snapshot.captured_at,
                     snapshot.persistent,
                 );
                 pipeline.execute(&mut context);
