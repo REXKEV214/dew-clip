@@ -63,12 +63,6 @@ pub fn toggle_clipboard_pin(
                     id: new_id,
                     created_at: if entry.created_at > 0 { entry.created_at } else { entry.timestamp },
                 });
-                if let Ok(deleted_ids) = state.repo.enforce_limit_with_conn(&conn, Some(&data_dir))
-                {
-                    for deleted_id in deleted_ids {
-                        let _ = app_handle.emit("clipboard-removed", deleted_id);
-                    }
-                }
             }
         }
 

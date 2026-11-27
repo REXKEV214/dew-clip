@@ -8,6 +8,7 @@ import { acquireBlurGuard, releaseBlurGuard } from "./focus";
  */
 export interface NativeMenuItem {
   text?: string;
+  enabled?: boolean;
   /** Shows a check mark. */
   checked?: boolean;
   action?: () => void;
@@ -33,13 +34,13 @@ const itemOptions = (item: NativeMenuItem, choose: Choose): ItemOptions => {
   if (item.separator) return { item: "Separator" };
   const text = item.text ?? "";
   if (item.children) {
-    return { text, items: item.children.map((child) => itemOptions(child, choose)) };
+    return { text, enabled: item.enabled, items: item.children.map((child) => itemOptions(child, choose)) };
   }
   const action = item.action ? choose(item.action) : undefined;
   if (item.checked !== undefined) {
-    return { text, checked: item.checked, action };
+    return { text, enabled: item.enabled, checked: item.checked, action };
   }
-  return { text, action };
+  return { text, enabled: item.enabled, action };
 };
 
 /**

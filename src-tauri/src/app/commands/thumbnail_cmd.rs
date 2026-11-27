@@ -28,6 +28,7 @@ const THUMBNAIL_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30
 const THUMBNAIL_CACHE_MAX_BYTES: u64 = 300 * 1024 * 1024;
 
 static THUMBNAIL_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+pub(crate) static THUMBNAIL_WRITERS: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
 pub(crate) fn thumbnail_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
     if let Some(dir) = THUMBNAIL_DIR.get() {
@@ -42,7 +43,7 @@ pub(crate) fn thumbnail_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
 }
 
 fn session_thumbnail_dir(data_dir: &Path, path: &Path) -> Option<PathBuf> {
-    let session = data_dir.join("session");
+    let session = crate::app::data_directory::session_storage_root(data_dir);
     let attachments = session.join("attachments");
     let in_session = path.starts_with(&attachments)
         || fs::canonicalize(path)
@@ -120,7 +121,7 @@ pub fn remove_cached_thumbnails(path: &Path) {
     let session_cache = path
         .parent()
         .and_then(Path::parent)
-        .filter(|dir| dir.file_name().is_some_and(|name| name == "session"))
+        .filter(|dir| crate::app::data_directory::owns_session(dir))
         .map(|dir| dir.join("thumbnails"));
     for dir in THUMBNAIL_DIR
         .get()
@@ -173,6 +174,7 @@ pub async fn get_video_thumbnail(app: AppHandle, path: String) -> Result<String,
 }
 
 fn build_video_thumbnail(path: &str, cache_dir: &Path) -> Result<String, AppError> {
+    let _cache = THUMBNAIL_WRITERS.read().unwrap();
     let canonical =
         fs::canonicalize(path).map_err(|e| AppError::IO(format!("video not accessible: {}", e)))?;
     let meta = fs::metadata(&canonical)
@@ -297,6 +299,7 @@ pub fn thumbnail_cache_key(canonical_path: &Path, file_size: u64, mtime_nanos: u
 }
 
 pub(crate) fn build_thumbnail(path: &str, cache_dir: &Path) -> Result<String, AppError> {
+    let _cache = THUMBNAIL_WRITERS.read().unwrap();
     let canonical =
         fs::canonicalize(path).map_err(|e| AppError::IO(format!("image not accessible: {}", e)))?;
     let meta = fs::metadata(&canonical)
@@ -602,6 +605,8 @@ mod tests {
     #[test]
     fn session_thumbnail_cache_lives_with_its_attachments() {
         let root = std::env::temp_dir().join(format!("dewclip-session-thumb-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        crate::app::data_directory::prepare_session(&root).unwrap();
         let attachment = root.join("session/attachments/shot.png");
         fs::create_dir_all(attachment.parent().unwrap()).unwrap();
         image::RgbImage::new(900, 450).save(&attachment).unwrap();

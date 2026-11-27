@@ -62,6 +62,22 @@ pub fn save_setting(
     if crate::database::is_translation_setting(&key) {
         return Err(AppError::Validation("use save_translation_config".into()));
     }
+    let atomic_setting = match key.as_str() {
+        "app.history_retention_days" => Some((&settings_state.history_retention_days, value.parse().unwrap_or(0))),
+        "app.storage_limit_mb" => Some((&settings_state.storage_limit_mb, value.parse().unwrap_or(0))),
+        "app.remote_image_max_mb" => Some((&settings_state.remote_image_max_bytes, crate::database::remote_image_max_bytes(&value))),
+        _ => None,
+    };
+    if let Some((setting, parsed)) = atomic_setting {
+        db_state.settings_repo.set(&key, &value)?;
+        setting.store(parsed, Ordering::Relaxed);
+        return Ok(());
+    }
+    if key == "app.download_remote_images" {
+        db_state.settings_repo.set(&key, &value)?;
+        settings_state.download_remote_images.store(value == "true", Ordering::Relaxed);
+        return Ok(());
+    }
     match key.as_str() {
         "app.sequential_mode" => {
             settings_state
@@ -255,11 +271,9 @@ pub fn set_app_cleanup_policies(
     policies: String,
 ) -> AppResult<()> {
     let mut guard = state.app_cleanup_policies.lock().unwrap();
-    *guard = policies.clone();
-    db_state
-        .settings_repo
-        .set("app.app_cleanup_policies", &policies)
-        .map_err(AppError::from)
+    db_state.settings_repo.set("app.app_cleanup_policies", &policies)?;
+    *guard = policies;
+    Ok(())
 }
 
 

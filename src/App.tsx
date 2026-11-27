@@ -36,6 +36,7 @@ import {
 import PreviewPanel from "./features/preview/PreviewPanel";
 import { useSpacePreview } from "./features/preview/useSpacePreview";
 import SettingsPage from "./features/settings/components/SettingsPage";
+import { useIgnoredApps } from "./features/settings/useIgnoredApps";
 import PermissionOnboarding from "./shared/components/PermissionOnboarding";
 import { ConfirmDialog, ToastContainer } from "./shared/components/Overlays";
 import { useContextMenuBlock } from "./shared/hooks/useContextMenuBlock";
@@ -62,6 +63,8 @@ const App = () => {
   const settings = useSettings();
   const { t, flag, values, ready, save, remember } = settings;
   const { toasts, pushToast, confirmDialog, openConfirm, closeConfirm } = useOverlays(t);
+  const ignoredApps = useIgnoredApps(settings, pushToast);
+  const addIgnoredApp = ignoredApps.add;
 
   const [showSettings, setShowSettings] = useState(false);
   const liveSearch = useLiveSearch(SEARCH_DELAY_MS);
@@ -231,9 +234,15 @@ const App = () => {
         menu = [favorite("add_favorite_file"), batch];
       }
       const share: NativeMenuItem = { text: t("share"), action: () => shareEntry(item) };
-      void showNativeMenu([open, ...menu, share]);
+      const path = item.source_app_path?.trim();
+      const ignoreApp: NativeMenuItem = {
+        text: t("stop_recording_this_app"),
+        enabled: Boolean(path),
+        action: path ? () => addIgnoredApp(item.source_app, path, t("ignored_apps_added")) : undefined,
+      };
+      void showNativeMenu([open, ...menu, ignoreApp, share]);
     },
-    [addFavorite, paste, pushToast, shareEntry, startBatch, t]
+    [addFavorite, addIgnoredApp, paste, pushToast, shareEntry, startBatch, t]
   );
 
   const pasteImageTextEntry = useCallback(
@@ -641,6 +650,9 @@ const App = () => {
         {showSettings ? (
           <SettingsPage
             settings={settings}
+            ignoredApps={ignoredApps}
+            openConfirm={openConfirm}
+            closeConfirm={closeConfirm}
             pinMode={pinMode}
             onSelectPinMode={(mode) => selectPinMode(mode, false)}
             translationConfig={translationConfig}
@@ -721,7 +733,7 @@ const App = () => {
             />
           )}
           {panel.kind === "preview" && previewEntry && (
-            <PreviewPanel key={previewEntry.id} t={t} entry={previewEntry} />
+            <PreviewPanel key={`${previewEntry.id}:${previewEntry.created_at ?? 0}`} t={t} entry={previewEntry} />
           )}
           {panel.kind === "batch" && (
             <BatchPanel

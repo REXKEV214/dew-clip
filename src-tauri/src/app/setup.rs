@@ -249,6 +249,10 @@ pub(crate) fn portable_data_dir() -> Option<std::path::PathBuf> {
 
 pub struct StartupSettings {
     pub persistent: bool,
+    pub history_retention_days: u64,
+    pub storage_limit_mb: u64,
+    pub download_remote_images: bool,
+    pub remote_image_max_bytes: u64,
     pub silent_start: bool,
     pub delete_after_paste: bool,
     pub cleanup_rules: String,
@@ -290,6 +294,10 @@ pub(crate) fn load_settings(repo: &SqliteSettingsRepository) -> rusqlite::Result
     };
     Ok(StartupSettings {
         persistent: get("app.persistent", "true") != "false",
+        history_retention_days: get("app.history_retention_days", "0").parse().unwrap_or(0),
+        storage_limit_mb: get("app.storage_limit_mb", "0").parse().unwrap_or(0),
+        download_remote_images: flag("app.download_remote_images", true),
+        remote_image_max_bytes: crate::database::remote_image_max_bytes(&get("app.remote_image_max_mb", "8")),
         silent_start: flag("app.silent_start", false),
         delete_after_paste: flag("app.delete_after_paste", false),
         cleanup_rules: get("app.cleanup_rules", ""),
@@ -356,6 +364,10 @@ fn setup_state(
 pub(crate) fn settings_state_from(s: &StartupSettings) -> SettingsState {
     SettingsState {
         persistent: AtomicBool::new(s.persistent),
+        history_retention_days: AtomicU64::new(s.history_retention_days),
+        storage_limit_mb: AtomicU64::new(s.storage_limit_mb),
+        download_remote_images: AtomicBool::new(s.download_remote_images),
+        remote_image_max_bytes: AtomicU64::new(s.remote_image_max_bytes),
         capture_files: AtomicBool::new(true),
         capture_rich_text: AtomicBool::new(true),
         silent_start: AtomicBool::new(s.silent_start),

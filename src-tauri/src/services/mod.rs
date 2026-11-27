@@ -7,4 +7,5 @@ pub mod markdown;
 pub mod ocr;
 pub mod paste_queue;
 pub mod sensitive_align;
+pub mod storage_manager;
 pub mod translate;

@@ -1,3 +1,4 @@
+use crate::infrastructure::app_path::canonical_app_path;
 use base64::Engine;
 use serde_json::json;
 use serde_json::Value;
@@ -9,13 +10,19 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "macos")]
 use objc2::rc::autoreleasepool;
 #[cfg(target_os = "macos")]
+use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
 use objc2::runtime::AnyObject;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{
     NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSImage, NSWorkspace,
 };
 #[cfg(target_os = "macos")]
-use objc2_foundation::{NSDictionary, NSString};
+use objc2_foundation::{NSArray, NSDictionary, NSString, NSURL};
+
+#[cfg(target_os = "macos")]
+#[link(name = "UniformTypeIdentifiers", kind = "framework")]
+extern "C" {}
 
 static EXECUTABLE_ICON_CACHE: OnceLock<Mutex<IconCache>> = OnceLock::new();
 static FILE_ICON_CACHE: OnceLock<Mutex<IconCache>> = OnceLock::new();
@@ -75,55 +82,47 @@ pub async fn launch_uwp_with_file(
     Ok(())
 }
 
-pub fn get_system_default_app(ext: &str) -> String {
-    // Lightweight fallback mapping on macOS.
-    // A proper LaunchServices lookup can replace this later.
-    let normalized = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+#[derive(Debug, PartialEq, Eq)]
+enum AppAssociation {
+    WebLink,
+    Extension(String),
+}
+
+fn app_association(content_type: &str) -> AppAssociation {
+    let normalized = content_type.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "txt" | "text" | "md" | "code" | "json" | "xml" | "csv" => "TextEdit".to_string(),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "heic" | "tiff" => "Preview".to_string(),
-        "mp4" | "mov" | "mkv" | "avi" | "wmv" | "webm" | "m4v" => "QuickTime Player".to_string(),
-        "html" | "htm" | "url" => "Safari".to_string(),
-        _ => String::new(),
+        "url" | "link" => AppAssociation::WebLink,
+        "text" | "code" => AppAssociation::Extension("txt".into()),
+        "rich_text" => AppAssociation::Extension("html".into()),
+        "image" => AppAssociation::Extension("png".into()),
+        "video" => AppAssociation::Extension("mp4".into()),
+        _ => AppAssociation::Extension(normalized.trim_start_matches('.').into()),
     }
 }
 
-fn collect_app_bundles(root: &Path, seen: &mut HashSet<String>, output: &mut Vec<Value>) {
-    let entries = match std::fs::read_dir(root) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
+fn app_bundle(path: &Path) -> Option<(PathBuf, String)> {
+    let path = canonical_app_path(path)?;
+    let name = path.file_stem()?.to_string_lossy().into_owned();
+    Some((path, name))
+}
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let is_app = path
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|s| s.eq_ignore_ascii_case("app"))
-            .unwrap_or(false);
-        if !is_app {
-            continue;
-        }
-
-        let path_str = path.to_string_lossy().to_string();
-        if !seen.insert(path_str.clone()) {
-            continue;
-        }
-
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Unknown")
-            .to_string();
-
-        output.push(json!({
-            "name": name,
-            "path": path_str
-        }));
-    }
+fn ordered_app_bundles(paths: impl IntoIterator<Item = PathBuf>, default: Option<&Path>) -> Vec<Value> {
+    let default = default.and_then(app_bundle);
+    let mut seen = HashSet::new();
+    let mut apps: Vec<_> = default
+        .iter()
+        .cloned()
+        .chain(paths.into_iter().filter_map(|path| app_bundle(&path)))
+        .filter(|(path, _)| seen.insert(path.clone()))
+        .collect();
+    apps.sort_by_cached_key(|(path, name)| (
+        default.as_ref().is_none_or(|(default_path, _)| default_path != path),
+        name.to_lowercase(),
+        path.clone(),
+    ));
+    apps.into_iter()
+        .map(|(path, name)| json!({ "name": name, "path": path.to_string_lossy() }))
+        .collect()
 }
 
 pub fn scan_installed_apps() -> Vec<Value> {
@@ -137,32 +136,67 @@ pub fn scan_installed_apps() -> Vec<Value> {
         roots.push(PathBuf::from(home).join("Applications"));
     }
 
-    let mut seen = HashSet::new();
-    let mut apps = Vec::new();
-    for root in roots {
-        collect_app_bundles(&root, &mut seen, &mut apps);
-    }
-
-    apps.sort_by(|a, b| {
-        let an = a
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let bn = b
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        an.cmp(&bn)
-    });
-    apps
+    let paths = roots.into_iter()
+        .filter_map(|root| std::fs::read_dir(root).ok())
+        .flat_map(|entries| entries.filter_map(|entry| entry.ok().map(|entry| entry.path())));
+    ordered_app_bundles(paths, None)
 }
 
-pub fn get_associated_apps(_ext: &str) -> Vec<Value> {
-    // Fallback on macOS: expose installed apps as candidates.
-    // Proper LaunchServices association lookup can be added later.
-    scan_installed_apps()
+fn lookup_apps(
+    content_type: &str,
+    include_associated: bool,
+) -> (Option<Retained<NSURL>>, Option<Retained<NSArray<NSURL>>>) {
+    let workspace = NSWorkspace::sharedWorkspace();
+    match app_association(content_type) {
+        AppAssociation::WebLink => {
+            let url = NSURL::URLWithString(&NSString::from_str("https://example.com"))
+                .expect("valid HTTPS URL");
+            (
+                workspace.URLForApplicationToOpenURL(&url),
+                include_associated.then(|| workspace.URLsForApplicationsToOpenURL(&url)),
+            )
+        }
+        AppAssociation::Extension(ext) if !ext.is_empty() => unsafe {
+            // The offline objc2 crates lack a binding for UTType.
+            let ty: Option<Retained<AnyObject>> = objc2::msg_send![
+                objc2::class!(UTType), typeWithFilenameExtension: &*NSString::from_str(&ext)
+            ];
+            let Some(ty) = ty else {
+                return (None, None);
+            };
+            let default = objc2::msg_send![&*workspace, URLForApplicationToOpenContentType: &*ty];
+            let associated = include_associated.then(|| {
+                objc2::msg_send![&*workspace, URLsForApplicationsToOpenContentType: &*ty]
+            });
+            (default, associated)
+        },
+        AppAssociation::Extension(_) => (None, None),
+    }
+}
+
+fn app_url_path(url: &NSURL) -> Option<PathBuf> {
+    url.path().map(|path| PathBuf::from(path.to_string()))
+}
+
+pub fn get_system_default_app(content_type: &str) -> String {
+    autoreleasepool(|_| {
+        let (default, _) = lookup_apps(content_type, false);
+        default.as_deref().and_then(app_url_path)
+            .and_then(|path| app_bundle(&path))
+            .map(|(_, name)| name)
+            .unwrap_or_default()
+    })
+}
+
+pub fn get_associated_apps(extension: &str) -> Vec<Value> {
+    autoreleasepool(|_| {
+        let (default, associated) = lookup_apps(extension, true);
+        let default = default.as_deref().and_then(app_url_path);
+        let paths = associated.iter().flat_map(|apps| {
+            (0..apps.count()).filter_map(|index| app_url_path(&apps.objectAtIndex(index)))
+        });
+        ordered_app_bundles(paths, default.as_deref())
+    })
 }
 
 fn bundle_path_from_target(path: &Path) -> Option<PathBuf> {
@@ -395,6 +429,49 @@ pub fn activate_app_by_name(name: &str) -> bool {
         }
         false
     })
+}
+
+#[cfg(test)]
+mod association_tests {
+    use super::{app_association, ordered_app_bundles, AppAssociation};
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn web_links_and_html_files_use_separate_associations() {
+        for content_type in ["url", "link"] {
+            assert_eq!(app_association(content_type), AppAssociation::WebLink);
+        }
+        for (content_type, ext) in [
+            ("rich_text", "html"), (".html", "html"), ("text", "txt"), ("code", "txt"),
+            ("image", "png"), ("video", "mp4"), (" .PDF ", "pdf"),
+        ] {
+            assert_eq!(app_association(content_type), AppAssociation::Extension(ext.into()));
+        }
+    }
+
+    #[test]
+    fn associations_use_existing_unique_bundles_with_default_first() {
+        let root = std::env::temp_dir().join(format!("dewclip-apps-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        for name in ["z Default.app", "beta.APP", "Alpha.app", "other"] {
+            std::fs::create_dir(root.join(name)).unwrap();
+        }
+        symlink(root.join("Alpha.app"), root.join("alias.app")).unwrap();
+        let paths = ["beta.APP", "Alpha.app", "missing.app", "other", "alias.app"]
+            .map(|name| root.join(name));
+        let apps = ordered_app_bundles(paths, Some(&root.join("z Default.app")));
+        let names: Vec<_> = apps.iter().map(|app| app["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["z Default", "Alpha", "beta"]);
+        assert_eq!(
+            apps[1]["path"], root.join("Alpha.app").canonicalize().unwrap().to_str().unwrap()
+        );
+        let default = root.join("z Default.app");
+        let default_alias = root.join("default alias.app");
+        symlink(&default, &default_alias).unwrap();
+        assert_eq!(ordered_app_bundles([default_alias], Some(&default)).len(), 1);
+        assert_eq!(ordered_app_bundles([], Some(&default))[0]["name"], "z Default");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[cfg(test)]

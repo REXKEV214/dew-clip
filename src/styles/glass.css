@@ -2156,6 +2156,39 @@ p {
   color: var(--text-tertiary);
 }
 
+.setting-details {
+  display: grid;
+  gap: 5px;
+  padding: 8px 10px;
+  margin: 0;
+  border: 0.5px solid var(--glass-line);
+  border-radius: 8px;
+  list-style: none;
+  font-size: 12px;
+}
+
+.setting-details > :is(li, div) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.setting-detail-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.setting-details dd {
+  margin: 0;
+  align-items: center;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .hint-dot {
   flex: none;
   width: 14px;
