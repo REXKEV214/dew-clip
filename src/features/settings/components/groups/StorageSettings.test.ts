@@ -43,7 +43,7 @@ it("asks before tightening either rule and preserves both settings when cancelle
       await act(async () => button('[role="dialog"] button', "Cancel").click());
       expect(document.querySelector('[role="dialog"]')).toBeNull();
       expect(button('button[role="radio"]', "Forever").getAttribute("aria-checked")).toBe("true");
-      expect(button('button[role="radio"]', "Unlimited").getAttribute("aria-checked")).toBe("true");
+      expect(button('button[role="radio"]', "None").getAttribute("aria-checked")).toBe("true");
     }
   } finally {
     await act(async () => root.unmount());

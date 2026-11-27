@@ -561,6 +561,10 @@ const App = () => {
     const subscriptions = [
       // Each opening starts unfiltered: a filter is for digging one item out.
       listen("clipboard-shown", () => {
+        // A button left focused (the close button, Back) shows a focus ring when the panel reopens.
+        // An open dialog keeps its focus so its focus trap and default button still work.
+        const focused = document.activeElement;
+        if (focused instanceof HTMLButtonElement && !hasOpenDialog()) focused.blur();
         setTypeFilter(null);
         clearSelection();
         listRef.current?.scrollToTop();

@@ -746,7 +746,7 @@ const en: Record<TranslationKey, string> = {
   retention_forever: "Forever",
   storage_limit: "Storage Limit",
   storage_limit_hint: "When the history database and attachments exceed this size, the oldest history is removed first. Pinned items, tagged items, and favorites are kept.",
-  storage_limit_unlimited: "Unlimited",
+  storage_limit_unlimited: "None",
   storage_limit_500mb: "500 MB",
   storage_limit_1gb: "1 GB",
   storage_limit_2gb: "2 GB",
